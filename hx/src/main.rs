@@ -1,4 +1,4 @@
-use std::{fs, io::Write};
+use std::{fs::{self, File}, io::Write};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -20,13 +20,22 @@ fn main() -> Result<()> {
     let args = Cli::parse();
 
     let input_text = fs::read_to_string(&args.input).context("Couldn't read input file")?;
-    let hex_digits = input_text.lines()
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty())
-                                .map(remove_all_whitespace)
-                                .map(remove_comments)
-                                .filter(|s| !s.is_empty())
-                                .collect::<String>();
+    let mut output: Box<dyn Write> = match args.output {
+        Some(ref path) => Box::new(File::create(path).context("Couldn't create output file")?),
+        None => Box::new(std::io::stdout()),
+    };
+
+    text_to_bin(&input_text, &mut output)
+}
+
+fn text_to_bin(input: &str, output: &mut impl Write) -> Result<()> {
+    let hex_digits = input.lines()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(remove_all_whitespace)
+                        .map(remove_comments)
+                        .filter(|s| !s.is_empty())
+                        .collect::<String>();
     
     dbg!(&hex_digits);
 
@@ -40,13 +49,9 @@ fn main() -> Result<()> {
         .collect::<Result<Vec<u8>, _>>()
         .context("Failed to parse hex string")?;
 
-    println!("{hex_bytes:?}");
+    eprintln!("{hex_bytes:?}");
 
-    if let Some(outfile) = args.output {
-        fs::write(&outfile, &hex_bytes).context("Failed to write output file")
-    } else {
-        std::io::stdout().write_all(&hex_bytes).context("Failed to write to stdout")
-    }
+    output.write_all(&hex_bytes).context("Failed to write output")
 }
 
 fn remove_all_whitespace<T: AsRef<str>>(s: T) -> String {
@@ -58,5 +63,75 @@ fn remove_comments<T: AsRef<str>>(s: T) -> String {
         s.as_ref()[..index].to_string()
     } else {
         s.as_ref().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn given_plain_input_then_bytes_are_converted_and_written() {
+        // no comments, whitespace, or special handling
+        let input = "010203040506";
+        let exp_output = vec![1, 2, 3, 4, 5, 6];
+        let mut output = Vec::new();
+
+        text_to_bin(input, &mut output).unwrap();
+
+        assert_eq!(output, exp_output);
+    }
+
+    #[test]
+    fn given_input_with_comments_then_bytes_are_converted_and_written() {
+        let input = "
+0102 # here is a comment
+03040506
+";
+        let exp_output = vec![1, 2, 3, 4, 5, 6];
+        let mut output = Vec::new();
+
+        text_to_bin(input, &mut output).unwrap();
+
+        assert_eq!(output, exp_output);
+    }
+
+    #[test]
+    fn given_input_with_newlines_and_whitespace_then_bytes_are_converted_and_written() {
+        let input = "
+         01
+02
+03 04   05            
+
+
+06
+# just a line comment
+";
+        let exp_output = vec![1, 2, 3, 4, 5, 6];
+        let mut output = Vec::new();
+
+        text_to_bin(input, &mut output).unwrap();
+
+        assert_eq!(output, exp_output);
+    }
+
+    #[test]
+    fn given_input_with_non_hex_digits_then_error_is_returned() {
+        let input = "010x02";
+        let mut output = Vec::new();
+
+        let result = text_to_bin(input, &mut output);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn given_input_with_odd_number_of_hex_digits_then_error_is_returned() {
+        let input = "10203";
+        let mut output = Vec::new();
+
+        let result = text_to_bin(input, &mut output);
+
+        assert!(result.is_err());
     }
 }
