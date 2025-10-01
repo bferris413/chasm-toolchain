@@ -3,6 +3,7 @@ use std::{fs::{self, File}, io::Write, num::NonZeroUsize};
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser};
 
+/// An hex <-> binary converter tool.
 #[derive(Debug, Parser)]
 struct Cli {
     /// Input file to process (default behavior is text -> bin)
