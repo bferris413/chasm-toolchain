@@ -118,7 +118,7 @@ fn remove_all_whitespace<T: AsRef<str>>(s: T) -> String {
 }
 
 fn remove_comments<T: AsRef<str>>(s: T) -> String {
-    if let Some(index) = s.as_ref().find("#") {
+    if let Some(index) = s.as_ref().find(";") {
         s.as_ref()[..index].to_string()
     } else {
         s.as_ref().to_string()
