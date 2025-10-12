@@ -23,8 +23,12 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
             }
             'x' => {
                 // hex literal
-                let hex_token = parse_hex_literal(source, &mut chars, i, line, &mut col)?;
+                let hex_token = tokenize_hex_literal(source, &mut chars, i, line, &mut col)?;
                 tokens.push(hex_token);
+            }
+            c if c.is_ascii_alphabetic() => {
+                let identifier = tokenize_identifier(source, &mut chars, i, line, &mut col)?;
+                tokens.push(identifier);
             }
             other => {
                 let err = AssemblyError::new(
@@ -42,7 +46,33 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
     Ok(tokens)
 }
 
-fn parse_hex_literal<'src>(
+fn tokenize_identifier<'src>(
+    source: &'src AssemblySource,
+    chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) -> Result<Token<'src>> {
+    *col += 1;
+
+    while matches!(chars.peek(), Some((_, c)) if c.is_ascii_alphanumeric()) {
+        let (_, _) = chars.next().unwrap();
+        *col += 1;
+    }
+
+    let lexeme = &source[start_index..*col];
+    let t = Token {
+        kind: TokenKind::Identifier,
+        lexeme,
+        line,
+        column: start_index,
+        source,
+    };
+
+    Ok(t)
+}
+
+fn tokenize_hex_literal<'src>(
     source: &'src AssemblySource,
     chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
     start_index: usize,
@@ -127,6 +157,7 @@ fn parse_hex_literal<'src>(
         lexeme,
         line,
         column: start_col,
+        source,
     };
 
     Ok(t)

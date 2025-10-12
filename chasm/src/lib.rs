@@ -11,14 +11,3 @@ pub struct AssembleArgs {
     #[arg(short, long, default_value_t = false)]
     text: bool,
 }
-
-struct AssemblySource {
-    source: String,
-}
-impl From<String> for AssemblySource {
-    fn from(source: String) -> Self {
-        Self { source }
-    }
-}
-
-struct AssemblyAst;
