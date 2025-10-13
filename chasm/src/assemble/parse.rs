@@ -81,6 +81,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
     let maybe_mnemonic = normalize_to_ascii_lower(token.lexeme, &mut tmp_buf);
     match maybe_mnemonic {
         "movs" => parse_movs(token, tokens),
+        "adds" => parse_adds(token, tokens),
         other if Register::try_from(other).is_ok() => {
             let err = AssemblyError::new(
                 format!("Expected instruction mnemonic, found register '{}'", token.lexeme),
@@ -176,6 +177,82 @@ fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Movs { dest: dest_register, value: hl }),
         token: movs_token,
+    };
+
+    Ok(node)
+}
+
+fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let maybe_register = tokens.next().ok_or_else(|| {
+        AssemblyError::new(
+            format!("Expected register after {} mnemonic, found EOF", adds_token.lexeme),
+            adds_token.line,
+            adds_token.column + adds_token.lexeme.len(),
+            None,
+            adds_token.source,
+        )
+    })?;
+
+    let TokenKind::Identifier = maybe_register.kind else {
+        let err = AssemblyError::new(
+            format!("Expected register after {} mnemonic, found {} '{}'", adds_token.lexeme, maybe_register.kind, maybe_register.lexeme),
+            maybe_register.line,
+            maybe_register.column,
+            Some(maybe_register.column + maybe_register.lexeme.len()),
+            maybe_register.source,
+        );
+        return Err(err.into());
+    };
+    let dest_register = Register::try_from(maybe_register.lexeme).map_err(|e| {
+        AssemblyError::new(
+            format!("Invalid register '{}' after {} mnemonic: {e}", maybe_register.lexeme, adds_token.lexeme),
+            maybe_register.line,
+            maybe_register.column,
+            Some(maybe_register.column + maybe_register.lexeme.len()),
+            maybe_register.source,
+        )
+    })?;
+
+    let dest_register = match dest_register {
+        Register::General(reg) if (reg as u8) < 8 => reg,
+        _ => {
+            let err = AssemblyError::new(
+                format!("Expected general-purpose register (r0-r7) after {} mnemonic, found '{:?}'", adds_token.lexeme, dest_register),
+                maybe_register.line,
+                maybe_register.column,
+                Some(maybe_register.column + maybe_register.lexeme.len()),
+                maybe_register.source,
+            );
+            return Err(err.into());
+        }
+    };
+
+    let maybe_imm8 = tokens.next().ok_or_else(|| {
+        AssemblyError::new(
+            format!("Expected immediate value after register in {} instruction", adds_token.lexeme),
+            maybe_register.line,
+            maybe_register.column + maybe_register.lexeme.len(),
+            None,
+            maybe_register.source,
+        )
+    })?;
+
+    let TokenKind::HexLiteralU8 = maybe_imm8.kind else {
+        let err = AssemblyError::new(
+            format!("Expected 8-bit immediate value after register in {} instruction, found '{}'", adds_token.lexeme, maybe_imm8.lexeme),
+            maybe_imm8.line,
+            maybe_imm8.column,
+            Some(maybe_imm8.column + maybe_imm8.lexeme.len()),
+            maybe_imm8.source,
+        );
+        return Err(err.into());
+    };
+
+    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(maybe_imm8)?.kind else { unreachable!() };
+
+    let node = Node {
+        kind: NodeKind::Instruction(Instruction::Adds { dest: dest_register, value: hl }),
+        token: adds_token,
     };
 
     Ok(node)

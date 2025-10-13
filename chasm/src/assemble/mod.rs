@@ -13,18 +13,21 @@ use codegen::codegen;
 use anyhow::{bail, Context, Error, Result};
 
 pub fn assemble(args: &AssembleArgs) -> Result<()> {
-    let _machine_code = fs::read_to_string(&args.file)
-        .with_context(|| format!("Failed to read assembly file '{}'", &args.file))
+    let machine_code = fs::read_to_string(&args.file)
+        .with_context(|| format!("Failed to read assembly file '{}'", &args.file.display()))
         .map(|source| source.into())
         .and_then(|s| assemble_source(&s))?;
+
+    let outfile = args.file.with_extension("bin");
+    fs::write(&outfile, &machine_code.bytes)
+        .with_context(|| format!("Failed to write binary file '{}'", outfile.display()))?;
 
     Ok(())
 }
 
 fn assemble_source(source: &AssemblySource) -> Result<MachineCode> {
-    dbg!(tokenize(source))
+    tokenize(source)
         .and_then(parse)
-        .inspect(|ast| eprintln!("AST: {ast:?}"))
         .and_then(codegen)
 }
 
@@ -63,6 +66,7 @@ enum NodeKind {
 #[derive(Debug)]
 enum Instruction {
     Movs { dest: GeneralRegister, value: HexLiteral },
+    Adds { dest: GeneralRegister, value: HexLiteral },
 }
 
 #[derive(Debug)]
@@ -216,7 +220,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn given_hex_word_then_it_is_generated() {
+    fn hex_word_gets_generated() {
         let source = AssemblySource::from("x1234.5678".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
@@ -225,7 +229,7 @@ mod tests {
     } 
 
     #[test]
-    fn given_hex_half_word_then_it_is_generated() {
+    fn hex_half_word_gets_generated() {
         let source = AssemblySource::from("x1234".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
@@ -234,7 +238,7 @@ mod tests {
     } 
 
     #[test]
-    fn given_hex_byte_then_it_is_generated() {
+    fn hex_byte_gets_generated() {
         let source = AssemblySource::from("x12".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
@@ -243,7 +247,7 @@ mod tests {
     } 
 
     #[test]
-    fn given_too_short_hex_string_then_error_is_returned() {
+    fn too_short_hex_string_returns_error() {
         let source = AssemblySource::from("x123".to_string());
 
         let err = assemble_source(&source).unwrap_err();
@@ -252,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn given_hex_string_with_non_halfword_separator_then_error_is_returned() {
+    fn hex_string_with_non_halfword_separator_returns_error() {
         let source = AssemblySource::from("x123.45678".to_string());
 
         let err = assemble_source(&source).unwrap_err();
@@ -261,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn given_hex_string_starting_with_separator_then_error_is_returned() {
+    fn hex_string_starting_with_separator_returns_error() {
         let source = AssemblySource::from("x.12345678".to_string());
 
         let err = assemble_source(&source).unwrap_err();
@@ -270,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn given_hex_string_ending_with_separator_then_error_is_returned() {
+    fn hex_string_ending_with_separator_returns_error() {
         let source = AssemblySource::from("x1234.".to_string());
 
         let err = assemble_source(&source).unwrap_err();
@@ -279,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn given_hex_string_with_non_halfword_after_separator_then_error_is_returned() {
+    fn hex_string_with_non_halfword_after_separator_returns_error() {
         let source = AssemblySource::from("x1234.567".to_string());
 
         let err = assemble_source(&source).unwrap_err();
@@ -288,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn given_hex_string_with_good_and_bad_separator_then_error_is_returned() {
+    fn hex_string_with_good_and_bad_separator_returns_error() {
         // first is fine, second is trailing
         let source = AssemblySource::from("x1234.5678.".to_string());
 
@@ -298,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn given_movs_with_well_formed_args_then_it_is_generated() {
+    fn movs_with_well_formed_args_gets_generated() {
         let source = AssemblySource::from("MOVS R0 x01".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
@@ -307,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn given_movs_with_missing_value_then_error_is_returned() {
+    fn movs_with_missing_value_returns_error() {
         let source = AssemblySource::from("MOVS R0".to_string());
 
         let err = assemble_source(&source).unwrap_err();
@@ -316,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn given_movs_with_large_reg_then_error_is_returned() {
+    fn movs_with_large_reg_returns_error() {
         let source = AssemblySource::from("MOVS R8 x01".to_string());
 
         let err = assemble_source(&source).unwrap_err();
@@ -325,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn given_movs_with_invalid_reg_then_error_is_returned() {
+    fn movs_with_invalid_reg_returns_error() {
         let source = AssemblySource::from("MOVS xFF".to_string());
 
         let err = assemble_source(&source).unwrap_err();
@@ -334,13 +338,67 @@ mod tests {
     }
 
     #[test]
-    fn given_movs_with_eof_then_error_is_returned() {
+    fn movs_with_eof_returns_error() {
         let source = AssemblySource::from("MOVS    ".to_string());
 
         let err = assemble_source(&source).unwrap_err();
 
         dbg!(&err);
         assert!(err.to_string().contains("Expected register after MOVS mnemonic, found EOF"));
+    }
+
+    #[test]
+    fn adds_gets_generated() {
+        let source = AssemblySource::from("ADDS R0 x01".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![0x01, 0x30]);
+    }
+
+    #[test]
+    fn adds_with_r7_and_255_gets_generated() {
+        let source = AssemblySource::from("ADDS R7 xFF".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![0xFF, 0x37]);
+    }
+
+    #[test]
+    fn adds_with_large_reg_returns_error() {
+        let source = AssemblySource::from("ADDS R12 xA1".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected general-purpose register (r0-r7)"));
+    }
+
+    #[test]
+    fn adds_with_missing_value_returns_error() {
+        let source = AssemblySource::from("ADDS R7".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected immediate value after register in ADDS instruction"));
+    }
+
+    #[test]
+    fn adds_with_invalid_reg_returns_error() {
+        let source = AssemblySource::from("ADDS abc".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Invalid register 'abc' after ADDS mnemonic"));
+    }
+
+    #[test]
+    fn adds_with_eof_returns_error() {
+        let source = AssemblySource::from("ADDS\n\n".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected register after ADDS mnemonic, found EOF"));
     }
 
 }

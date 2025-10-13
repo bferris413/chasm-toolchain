@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::Args;
 
 pub mod assemble;
@@ -5,7 +7,7 @@ pub mod assemble;
 #[derive(Args, Debug)]
 pub struct AssembleArgs {
     /// The chasm assembly file (.cas)
-    file: String,
+    file: PathBuf,
 
     /// Output the machine code as a hex text file instead of raw binary
     #[arg(short, long, default_value_t = false)]

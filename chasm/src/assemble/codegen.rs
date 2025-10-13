@@ -34,7 +34,6 @@ fn generate_instruction(instr: Instruction, output: &mut Vec<u8>) {
         Instruction::Movs { dest, value } => {
             match value {
                 HexLiteral::U8(imm8) => {
-                    // Encoding for MOVS Rd, #imm8
                     let mut base_instr = 0b00100_000_00000000;
                     let dest_and_value = ((dest as u16) << 8) | (imm8 as u16);
                     base_instr |= dest_and_value;
@@ -42,6 +41,18 @@ fn generate_instruction(instr: Instruction, output: &mut Vec<u8>) {
                     output.extend(&base_instr.to_le_bytes());
                 }
                 _ => unimplemented!("Only immediate 8-bit values are supported for MOVS"),
+            };
+        }
+        Instruction::Adds { dest, value } => {
+            match value {
+                HexLiteral::U8(imm8) => {
+                    let mut base_instr = 0b00110_000_00000000;
+                    let dest_and_value = ((dest as u16) << 8) | (imm8 as u16);
+                    base_instr |= dest_and_value;
+
+                    output.extend(&base_instr.to_le_bytes());
+                }
+                _ => unimplemented!("Only immediate 8-bit values are supported for ADDS"),
             };
         }
     }
