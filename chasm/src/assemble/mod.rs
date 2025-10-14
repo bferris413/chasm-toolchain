@@ -68,6 +68,7 @@ enum NodeKind {
 enum Instruction {
     Movs { dest: GeneralRegister, value: HexLiteral },
     Adds { dest: GeneralRegister, value: HexLiteral },
+    Branch { label: String },
 }
 
 #[derive(Debug)]
@@ -407,7 +408,11 @@ mod tests {
 
     #[test]
     fn label_stores_address_of_next_instruction() {
-        let source = AssemblySource::from("MOVS R0 x01\n@label\nMOVS R1 x02".to_string());
+        let source = AssemblySource::from("
+            MOVS R0 x01
+            @label
+            MOVS R1 x02
+        ".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 
@@ -416,7 +421,12 @@ mod tests {
 
     #[test]
     fn label_duplicate_returns_error() {
-        let source = AssemblySource::from("MOVS R0 x01\n@label\nMOVS R1 x02\n@label".to_string());
+        let source = AssemblySource::from("
+            MOVS R0 x01
+            @label
+            MOVS R1 x02
+            @label
+        ".to_string());
 
         let err = assemble_source(&source).unwrap_err();
 
@@ -425,7 +435,14 @@ mod tests {
 
     #[test]
     fn label_stores_multiple_labels() {
-        let source = AssemblySource::from("MOVS R0 x01\n@label\n\n\n  ADDS R1 x02\n@loop".to_string());
+        let source = AssemblySource::from("
+            MOVS R0 x01
+            @label
+            
+            
+            ADDS R1 x02
+            @loop
+        ".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 
@@ -433,4 +450,47 @@ mod tests {
         assert_eq!(machine_code.labels.get("@loop"), Some(&4));
     }
 
+    #[test]
+    fn branch_to_label_gets_generated() {
+        let source = AssemblySource::from("
+            MOVS R0 x01
+            @loop
+                ADDS R0 x01
+                B @loop
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x01, 0x20, // MOVS R0, #1
+            0x01, 0x30, // ADDS R0, #1
+            0xFD, 0xE7, // B to ADDS
+        ]);
+    }
+
+    #[test]
+    fn unaligned_instruction_returns_error() {
+        let source = AssemblySource::from("
+            x01
+            MOVS R0 x01
+        ".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Attempted to generate unaligned"));
+    }
+
+    #[test]
+    fn branch_to_label_too_far_behind_generates_error() {
+        let source = AssemblySource::from(format!("
+            MOVS R0 x01
+            @loop
+                {}
+                B @loop
+        ", "x01\n".repeat(4096)));
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Branch target '@loop' is too far away (offset -2050)"));
+    }
 }

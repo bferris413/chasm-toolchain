@@ -16,7 +16,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
                 generate_hex_literal(lit, &mut code_bytes);
             }
             NodeKind::Instruction(instr) => {
-                generate_instruction(instr, &mut code_bytes);
+                generate_instruction(instr, &mut code_bytes, &labels)?;
             }
             NodeKind::Label => {
                 let label = node.token.lexeme;
@@ -43,7 +43,15 @@ fn generate_hex_literal(lit: HexLiteral, output: &mut Vec<u8>) {
     }
 }
 
-fn generate_instruction(instr: Instruction, output: &mut Vec<u8>) {
+#[allow(clippy::unusual_byte_groupings)]
+fn generate_instruction(
+    instr: Instruction,
+    output: &mut Vec<u8>,
+    labels: &HashMap<String, usize>
+) -> Result<()> {
+    if output.len() % 2 != 0 {
+        bail!("Attempted to generate unaligned {instr:?} at {:02X}", output.len());
+    }
     match instr {
         Instruction::Movs { dest, value } => {
             match value {
@@ -69,5 +77,31 @@ fn generate_instruction(instr: Instruction, output: &mut Vec<u8>) {
                 _ => unimplemented!("Only immediate 8-bit values are supported for ADDS"),
             };
         }
+        Instruction::Branch { label } => {
+            // Cortex-M4F PC is 4 bytes ahead of the current instruction
+            let current_pc = output.len() + 4;
+            let target_addr = match labels.get(&label) {
+                Some(addr) => *addr,
+                None => bail!("Undefined label '{label}' (forward references aren't supported yet)"),
+            };
+
+            let offset_bytes = target_addr as isize - current_pc as isize;
+            if offset_bytes % 2 != 0 {
+                bail!("Branch target address must be halfword-aligned, but label '{label}' is at byte address {target_addr:02X}");
+            }
+
+            let offset_halfwords = offset_bytes / 2;
+            if !(-2048..=2046).contains(&offset_halfwords) {
+                bail!("Branch target '{label}' is too far away (offset {offset_halfwords}), must be in range [-2048, +2046] halfwords");
+            }
+
+            let masked_offset = (offset_halfwords as u16) & 0x7FF; // first 11 bits
+
+            let base_instr = 0b11100_00000000000;
+            let encoded_branch = base_instr | masked_offset;
+            output.extend(&encoded_branch.to_le_bytes());
+        }
     }
+
+    Ok(())
 }
