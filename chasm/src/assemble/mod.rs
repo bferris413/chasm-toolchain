@@ -3,7 +3,7 @@ mod token;
 mod codegen;
 mod helpers;
 
-use std::{fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}};
+use std::{collections::HashMap, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}};
 
 use crate::{assemble::helpers::normalize_to_ascii_lower, AssembleArgs};
 use token::tokenize;
@@ -61,6 +61,7 @@ enum NodeKind {
     HexLiteral(HexLiteral),
     Instruction(Instruction),
     Register(Register),
+    Label,
 }
 
 #[derive(Debug)]
@@ -161,6 +162,7 @@ impl<'src> DerefMut for AssemblyTokens<'src> {
 #[derive(Debug, Default)]
 struct MachineCode {
     bytes: Vec<u8>,
+    labels: HashMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -178,6 +180,7 @@ enum TokenKind {
     HexLiteralU16,
     HexLiteralU8,
     Identifier,
+    Label,
 }
 impl Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -186,6 +189,7 @@ impl Display for TokenKind {
             TokenKind::HexLiteralU16 => write!(f, "hex literal (u16)"),
             TokenKind::HexLiteralU8 => write!(f, "hex literal (u8)"),
             TokenKind::Identifier => write!(f, "identifier"),
+            TokenKind::Label => write!(f, "label"),
         }
     }
 }
@@ -399,6 +403,34 @@ mod tests {
         let err = assemble_source(&source).unwrap_err();
 
         assert!(err.to_string().contains("Expected register after ADDS mnemonic, found EOF"));
+    }
+
+    #[test]
+    fn label_stores_address_of_next_instruction() {
+        let source = AssemblySource::from("MOVS R0 x01\n@label\nMOVS R1 x02".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.labels.get("@label"), Some(&2));
+    }
+
+    #[test]
+    fn label_duplicate_returns_error() {
+        let source = AssemblySource::from("MOVS R0 x01\n@label\nMOVS R1 x02\n@label".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Duplicate label '@label'"));
+    }
+
+    #[test]
+    fn label_stores_multiple_labels() {
+        let source = AssemblySource::from("MOVS R0 x01\n@label\n\n\n  ADDS R1 x02\n@loop".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.labels.get("@label"), Some(&2));
+        assert_eq!(machine_code.labels.get("@loop"), Some(&4));
     }
 
 }

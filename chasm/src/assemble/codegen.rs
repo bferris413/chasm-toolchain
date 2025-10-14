@@ -1,11 +1,15 @@
 //! Machine code generation for chasm assembly source code.
 
-use anyhow::Result;
+use std::collections::HashMap;
+
+use anyhow::{bail, Result};
 
 use crate::assemble::{AssemblyAst, HexLiteral, Instruction, MachineCode, NodeKind};
 
 pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
     let mut code_bytes = Vec::new();
+    let mut labels = HashMap::new();
+
     for node in ast.nodes {
         match node.kind {
             NodeKind::HexLiteral(lit) => {
@@ -14,11 +18,21 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
             NodeKind::Instruction(instr) => {
                 generate_instruction(instr, &mut code_bytes);
             }
-            _ => todo!(),
+            NodeKind::Label => {
+                let label = node.token.lexeme;
+
+                if labels.contains_key(label) {
+                    let old_addr = labels.get(label).unwrap();
+                    bail!("Duplicate label '{label}', old address is {old_addr:02X}, new address is {:02X}", code_bytes.len());
+                }
+
+                labels.insert(label.to_string(), code_bytes.len());
+            }
+            other => todo!("{other:?}"),
         }
     }
-    
-    Ok(MachineCode { bytes: code_bytes })
+
+    Ok(MachineCode { bytes: code_bytes, labels })
 }
 
 fn generate_hex_literal(lit: HexLiteral, output: &mut Vec<u8>) {

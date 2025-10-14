@@ -26,6 +26,11 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 let hex_token = tokenize_hex_literal(source, &mut chars, i, line, &mut col)?;
                 tokens.push(hex_token);
             }
+            '@' => {
+                // label
+                let label_token = tokenize_label(source, &mut chars, i, line, &mut col)?;
+                tokens.push(label_token);
+            }
             c if c.is_ascii_alphabetic() => {
                 let identifier = tokenize_identifier(source, &mut chars, i, line, &mut col)?;
                 tokens.push(identifier);
@@ -53,19 +58,62 @@ fn tokenize_identifier<'src>(
     line: usize,
     col: &mut usize,
 ) -> Result<Token<'src>> {
+    let mut cur_index = start_index + 1;
+    let start_col = *col;
     *col += 1;
 
     while matches!(chars.peek(), Some((_, c)) if c.is_ascii_alphanumeric()) {
         let (_, _) = chars.next().unwrap();
         *col += 1;
+        cur_index += 1;
     }
 
-    let lexeme = &source[start_index..*col];
+    let lexeme = &source[start_index..cur_index];
     let t = Token {
         kind: TokenKind::Identifier,
         lexeme,
         line,
-        column: start_index,
+        column: start_col,
+        source,
+    };
+
+    Ok(t)
+}
+
+fn tokenize_label<'src>(
+    source: &'src AssemblySource,
+    chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) -> Result<Token<'src>> {
+    let mut cur_index = start_index + 1;
+    let start_col = *col;
+    *col += 1;
+
+    while matches!(chars.peek(), Some((_, c)) if c.is_ascii_alphanumeric()) {
+        let (_, _) = chars.next().unwrap();
+        *col += 1;
+        cur_index += 1;
+    }
+
+    let lexeme = &source[start_index..cur_index];
+    if lexeme.len() < 2 {
+        let err = AssemblyError::new(
+            "Label must have at least one character after '@'".to_string(),
+            line,
+            start_col,
+            Some(*col),
+            source,
+        );
+        return Err(err.into());
+    }
+
+    let t = Token {
+        kind: TokenKind::Label,
+        lexeme,
+        line,
+        column: start_col,
         source,
     };
 
@@ -80,6 +128,7 @@ fn tokenize_hex_literal<'src>(
     col: &mut usize,
 ) -> Result<Token<'src>> {
     let start_col = *col;
+    let mut cur_index = start_index + 1;
     *col += 1;
     let mut ndigits = 0;
 
@@ -120,6 +169,7 @@ fn tokenize_hex_literal<'src>(
             ndigits += 1;
         }
         *col += 1;
+        cur_index += 1;
     }
 
     if ! (2..=8).contains(&ndigits) {
@@ -144,7 +194,7 @@ fn tokenize_hex_literal<'src>(
         return Err(err.into());
     }
 
-    let lexeme = &source[start_index..start_index + (*col - start_col)];
+    let lexeme = &source[start_index..cur_index];
     let token_kind = match ndigits {
         2 => TokenKind::HexLiteralU8,
         4 => TokenKind::HexLiteralU16,
