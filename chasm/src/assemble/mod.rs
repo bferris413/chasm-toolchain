@@ -493,4 +493,21 @@ mod tests {
 
         assert!(err.to_string().contains("Branch target '@loop' is too far away (offset -2050)"));
     }
+
+    #[test]
+    fn comments_get_skipped() {
+        let source = AssemblySource::from("
+            ; An arbitrary comment
+            x01010101
+            ADDS R0 x01 ; r0 += 1
+            ; ...
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap(); 
+
+        assert_eq!(machine_code.bytes, vec![
+            0x01, 0x01, 0x01, 0x01,
+            0x01, 0x30, // ADDS R0, #1
+        ]);
+    }
 }

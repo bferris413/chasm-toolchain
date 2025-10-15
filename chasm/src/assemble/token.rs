@@ -21,6 +21,9 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
             c if c.is_whitespace() => {
                 col += 1;
             }
+            ';' => {
+                skip_comment(&mut chars, &mut col);
+            }
             'x' => {
                 // hex literal
                 let hex_token = tokenize_hex_literal(source, &mut chars, i, line, &mut col)?;
@@ -49,6 +52,18 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
     }
 
     Ok(tokens)
+}
+
+fn skip_comment(
+    chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
+    col: &mut usize,
+) {
+    *col += 1;
+
+    while matches!(chars.peek(), Some((_, c)) if *c != '\n') {
+        let (_, _) = chars.next().unwrap();
+        *col += 1;
+    }
 }
 
 fn tokenize_identifier<'src>(
