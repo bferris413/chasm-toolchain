@@ -510,4 +510,32 @@ mod tests {
             0x01, 0x30, // ADDS R0, #1
         ]);
     }
+
+    #[test]
+    fn minimal_program_assembles() {
+        // This code is from metal-arm/0 and is known to run on ek-tm4c123gxl
+        let source = AssemblySource::from("
+            ; vector table
+            x2000.8000         ; sp
+            x0000.0009         ; reset handler address | 1 (thumb mode)
+
+            ; Reset handler - Initializes and continuously increments R0
+            MOVS R0 x01
+
+            @loop
+                ADDS R0 x01
+                B @loop
+        ".to_string());
+        let exp_bytes = vec![
+            0x00, 0x80, 0x00, 0x20, // sp addr
+            0x09, 0x00, 0x00, 0x00, // reset handler addr
+            0x01, 0x20, // MOVS
+            0x01, 0x30, // ADD
+            0xFD, 0xE7  // B
+        ];
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, exp_bytes);
+    }
 }
