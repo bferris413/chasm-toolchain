@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use crate::assemble::{helpers::normalize_to_ascii_lower, AssemblyAst, AssemblyError, AssemblyTokens, HexLiteral, Instruction, Node, NodeKind, Register, Token, TokenKind};
+use crate::assemble::{helpers::normalize_to_ascii_lower, AssemblyAst, AssemblyError, AssemblyTokens, GeneralRegister, HexLiteral, Instruction, Node, NodeKind, Register, Token, TokenKind};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -97,6 +97,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
     let maybe_mnemonic = normalize_to_ascii_lower(token.lexeme, &mut tmp_buf);
     match maybe_mnemonic {
         "movs" => parse_movs(token, tokens),
+        "movw" => parse_movw(token, tokens),
         "adds" => parse_adds(token, tokens),
         "b" => parse_branch(token, tokens),
         other if Register::try_from(other).is_ok() => {
@@ -121,6 +122,82 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
             Err(err.into())
         }
     }
+}
+
+fn parse_movw<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let maybe_register = tokens.next().ok_or_else(|| {
+        AssemblyError::new(
+            format!("Expected register after {} mnemonic, found EOF", movs_token.lexeme),
+            movs_token.line,
+            movs_token.column + movs_token.lexeme.len(),
+            None,
+            movs_token.source,
+        )
+    })?;
+
+    let TokenKind::Identifier = maybe_register.kind else {
+        let err = AssemblyError::new(
+            format!("Expected register after {} mnemonic, found {} '{}'", movs_token.lexeme, maybe_register.kind, maybe_register.lexeme),
+            maybe_register.line,
+            maybe_register.column,
+            Some(maybe_register.column + maybe_register.lexeme.len()),
+            maybe_register.source,
+        );
+        return Err(err.into());
+    };
+    let dest_register = Register::try_from(maybe_register.lexeme).map_err(|e| {
+        AssemblyError::new(
+            format!("Invalid register '{}' after {} mnemonic: {e}", maybe_register.lexeme, movs_token.lexeme),
+            maybe_register.line,
+            maybe_register.column,
+            Some(maybe_register.column + maybe_register.lexeme.len()),
+            maybe_register.source,
+        )
+    })?;
+
+    let reg = match dest_register {
+        Register::General(reg) => reg,
+        _ => {
+            let err = AssemblyError::new(
+                format!("Expected general-purpose register (r0-r15) after {} mnemonic, found '{:?}'", movs_token.lexeme, dest_register),
+                maybe_register.line,
+                maybe_register.column,
+                Some(maybe_register.column + maybe_register.lexeme.len()),
+                maybe_register.source,
+            );
+            return Err(err.into());
+        }
+    };
+
+    let maybe_imm16 = tokens.next().ok_or_else(|| {
+        AssemblyError::new(
+            format!("Expected immediate value after register in {} instruction", movs_token.lexeme),
+            maybe_register.line,
+            maybe_register.column + maybe_register.lexeme.len(),
+            None,
+            maybe_register.source,
+        )
+    })?;
+
+    let TokenKind::HexLiteralU16 = maybe_imm16.kind else {
+        let err = AssemblyError::new(
+            format!("Expected 16-bit immediate value after register in {} instruction, found '{}'", movs_token.lexeme, maybe_imm16.lexeme),
+            maybe_imm16.line,
+            maybe_imm16.column,
+            Some(maybe_imm16.column + maybe_imm16.lexeme.len()),
+            maybe_imm16.source,
+        );
+        return Err(err.into());
+    };
+
+    let NodeKind::HexLiteral(hl @ HexLiteral::U16(_imm16)) = parse_hex_literal_u16(maybe_imm16)?.kind else { unreachable!() };
+
+    let node = Node {
+        kind: NodeKind::Instruction(Instruction::Movw { dest: reg, value: hl }),
+        token: movs_token,
+    };
+
+    Ok(node)
 }
 
 fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {

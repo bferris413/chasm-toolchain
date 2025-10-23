@@ -66,6 +66,7 @@ enum NodeKind {
 
 #[derive(Debug)]
 enum Instruction {
+    Movw { dest: GeneralRegister, value: HexLiteral },
     Movs { dest: GeneralRegister, value: HexLiteral },
     Adds { dest: GeneralRegister, value: HexLiteral },
     Branch { label: String },
@@ -537,5 +538,33 @@ mod tests {
         let machine_code = assemble_source(&source).unwrap();
 
         assert_eq!(machine_code.bytes, exp_bytes);
+    }
+
+    #[test]
+    fn movw_gets_generated() {
+        let source = AssemblySource::from("MOVW R5 xFFFF".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b11110_1_100100_1111_0_111_0101_11111111
+        // b11110110_01001111_01110101_11111111
+        // b11110110_01001111_00000101_11111111
+        // xF64F.75FF
+        // x4FF6.FF75
+        assert_eq!(machine_code.bytes, vec![ 0x4F, 0xF6, 0xFF, 0x75 ]);
+    }
+
+    #[test]
+    fn movw_with_high_nibble_register_gets_generated() {
+        let source = AssemblySource::from("MOVW R9 xFFFF".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b11110_1_100100_1111_0_111_1001_11111111
+        // b11110110_01001111_01111001_11111111
+        // b11110110_01001111_01111001_11111111
+        // xF64F.79FF
+        // x4FF6.FF79
+        assert_eq!(machine_code.bytes, vec![ 0x4F, 0xF6, 0xFF, 0x79 ]);
     }
 }
