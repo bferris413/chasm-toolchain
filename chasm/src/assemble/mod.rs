@@ -67,6 +67,7 @@ enum NodeKind {
 #[derive(Debug)]
 enum Instruction {
     Movw { dest: GeneralRegister, value: HexLiteral },
+    Movt { dest: GeneralRegister, value: HexLiteral },
     Movs { dest: GeneralRegister, value: HexLiteral },
     Adds { dest: GeneralRegister, value: HexLiteral },
     Branch { label: String },
@@ -548,7 +549,6 @@ mod tests {
 
         // b11110_1_100100_1111_0_111_0101_11111111
         // b11110110_01001111_01110101_11111111
-        // b11110110_01001111_00000101_11111111
         // xF64F.75FF
         // x4FF6.FF75
         assert_eq!(machine_code.bytes, vec![ 0x4F, 0xF6, 0xFF, 0x75 ]);
@@ -562,9 +562,33 @@ mod tests {
 
         // b11110_1_100100_1111_0_111_1001_11111111
         // b11110110_01001111_01111001_11111111
-        // b11110110_01001111_01111001_11111111
         // xF64F.79FF
         // x4FF6.FF79
         assert_eq!(machine_code.bytes, vec![ 0x4F, 0xF6, 0xFF, 0x79 ]);
+    }
+
+    #[test]
+    fn movt_gets_generated() {
+        let source = AssemblySource::from("MOVT R2 x0001".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b11110010_11000000_00000010_00000001
+        // xF2C0.0201
+        // xC0F2.0102
+        assert_eq!(machine_code.bytes, vec![ 0xC0, 0xF2, 0x01, 0x02 ]);
+    }
+
+    #[test]
+    fn movt_with_high_nibble_register_gets_generated() {
+        let source = AssemblySource::from("MOVT R12 xFFFF".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b11110_1_101100_1111_0_111_1100_11111111
+        // b11110110_11001111_01111100_11111111
+        // xF6CF.7CFF
+        // xCFF6.FF7C
+        assert_eq!(machine_code.bytes, vec![ 0xCF, 0xF6, 0xFF, 0x7C ]);
     }
 }

@@ -53,11 +53,39 @@ fn generate_instruction(
         bail!("Attempted to generate unaligned {instr:?} at {:02X}", output.len());
     }
     match instr {
+        Instruction::Movt { dest, value } => {
+            match value {
+                HexLiteral::U16(imm16) => {
+                    let mut base_hw1 = 0b11110010_11000000u16;
+                    let mut base_hw2 = 0b00000000_00000000u16;
+                    let dest = dest as u16 & 0x0F;
+                    base_hw2 |= dest << 8;
+                    println!("dest: {dest:032b}");
+
+                    let val = imm16.to_be_bytes();
+                    let imm4 = (val[0] >> 4) as u16 & 0x0F;
+                    let i = ((val[0] >> 3) as u16 & 0x01) << 10;
+                    let imm3 = (val[0] as u16 & 0x07) << 12;
+                    let imm8 = val[1] as u16 & 0xFF;
+                    println!("imm4: {imm4:032b}");
+                    println!("i___: {i:032b}");
+                    println!("imm3: {imm3:032b}");
+                    println!("imm8: {imm8:032b}");
+
+                    base_hw1 |= imm4 | i;
+                    base_hw2 |= imm3 | imm8;
+                    println!("final: {base_hw1:016b}_{base_hw2:016b}");
+                    output.extend(&base_hw1.to_le_bytes());
+                    output.extend(&base_hw2.to_le_bytes());
+                }
+                _ => unimplemented!("Only immediate 16-bit values are supported for MOVT"),
+            };
+        }
         Instruction::Movw { dest, value } => {
             match value {
                 HexLiteral::U16(imm16) => {
                     let mut base_hw1 = 0b11110010_01000000u16;
-                    let mut base_hw2 = 00000000_00000000u16;
+                    let mut base_hw2 = 0b00000000_00000000u16;
                     let dest = dest as u16 & 0x0F;
                     base_hw2 |= dest << 8;
                     println!("dest: {dest:032b}");
