@@ -66,12 +66,14 @@ enum NodeKind {
 
 #[derive(Debug)]
 enum Instruction {
-    Ldr  { dest: GeneralRegister, src: GeneralRegister },
-    Movw { dest: GeneralRegister, value: HexLiteral },
-    Movt { dest: GeneralRegister, value: HexLiteral },
-    Movs { dest: GeneralRegister, value: HexLiteral },
     Adds { dest: GeneralRegister, value: HexLiteral },
     Branch { label: String },
+    Ldr  { dest: GeneralRegister, src: GeneralRegister },
+    Movs { dest: GeneralRegister, value: HexLiteral },
+    Movt { dest: GeneralRegister, value: HexLiteral },
+    Movw { dest: GeneralRegister, value: HexLiteral },
+    Orrs { dest: GeneralRegister, src: GeneralRegister },
+    Str { dest_addr_reg: GeneralRegister, src: GeneralRegister },
 }
 
 #[derive(Debug)]
@@ -342,7 +344,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Expected register after MOVS mnemonic, found hex literal (u8) 'xFF'"));
+        assert!(err.to_string().contains("Expected register after 'MOVS', found hex literal (u8) 'xFF'"));
     }
 
     #[test]
@@ -351,8 +353,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        dbg!(&err);
-        assert!(err.to_string().contains("Expected register after MOVS mnemonic, found EOF"));
+        assert!(err.to_string().contains("Expected register after 'MOVS', found EOF"));
     }
 
     #[test]
@@ -388,7 +389,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Expected immediate value after register in ADDS instruction"));
+        assert!(err.to_string().contains("Expected immediate value after register in ADDS"));
     }
 
     #[test]
@@ -397,7 +398,8 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Invalid register 'abc' after ADDS mnemonic"));
+        dbg!(&err);
+        assert!(err.to_string().contains("Invalid register 'abc' after 'ADDS'"));
     }
 
     #[test]
@@ -406,7 +408,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Expected register after ADDS mnemonic, found EOF"));
+        assert!(err.to_string().contains("Expected register after 'ADDS', found EOF"));
     }
 
     #[test]
@@ -617,5 +619,53 @@ mod tests {
         // x6814
         // x1468
         assert_eq!(machine_code.bytes, vec![ 0x14, 0x68 ]);
+    }
+
+    #[test]
+    fn ldr_immediate_with_4_bit_src_gets_generated_as_t3_encoding() {
+        let source = AssemblySource::from("LDR R2 R9".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b111110001101_1001_0010_000000000000
+        // b11111000_11011001_00100000_00000000
+        // xD9F8.0020
+        assert_eq!(machine_code.bytes, vec![ 0xD9, 0xF8, 0x00, 0x20 ]);
+    }
+
+    #[test]
+    fn ldr_immediate_with_4_bit_dest_gets_generated_as_t3_encoding() {
+        let source = AssemblySource::from("LDR R12 R1".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b111110001101_0001_1100_000000000000
+        // b11111000_11010001_11000000_00000000
+        // xD1F8.00C0
+        assert_eq!(machine_code.bytes, vec![ 0xD1, 0xF8, 0x00, 0xC0 ]);
+    }
+
+    #[test]
+    fn orrs_register_gets_generated_as_t1_encoding() {
+        let source = AssemblySource::from("ORRS R3 R5".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b0100001100_101_011
+        // b01000011_00101011
+        // x2B43
+        assert_eq!(machine_code.bytes, vec![ 0x2B, 0x43 ]);
+    }
+
+    #[test]
+    fn str_immediate_gets_generated_as_t1_encoding() {
+        let source = AssemblySource::from("STR R2 R7".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b0110000000_111_010
+        // b01100000_00111010
+        // x3A60
+        assert_eq!(machine_code.bytes, vec![ 0x3A, 0x60 ]);
     }
 }
