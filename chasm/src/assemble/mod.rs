@@ -66,6 +66,7 @@ enum NodeKind {
 
 #[derive(Debug)]
 enum Instruction {
+    Ldr  { dest: GeneralRegister, src: GeneralRegister },
     Movw { dest: GeneralRegister, value: HexLiteral },
     Movt { dest: GeneralRegister, value: HexLiteral },
     Movs { dest: GeneralRegister, value: HexLiteral },
@@ -590,5 +591,31 @@ mod tests {
         // xF6CF.7CFF
         // xCFF6.FF7C
         assert_eq!(machine_code.bytes, vec![ 0xCF, 0xF6, 0xFF, 0x7C ]);
+    }
+
+    #[test]
+    fn ldr_immediate_with_3_bit_src_dest_gets_generated_as_t1_encoding() {
+        let source = AssemblySource::from("LDR R1 R0".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b01101_00000_000_001
+        // b01101000_00000001
+        // x6801
+        // x0168
+        assert_eq!(machine_code.bytes, vec![ 0x01, 0x68 ]);
+    }
+
+    #[test]
+    fn ldr_immediate_with_another_3_bit_src_dest_gets_generated_as_t1_encoding() {
+        let source = AssemblySource::from("LDR R4 R2".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b01101_00000_010_100
+        // b01101000_00010100
+        // x6814
+        // x1468
+        assert_eq!(machine_code.bytes, vec![ 0x14, 0x68 ]);
     }
 }

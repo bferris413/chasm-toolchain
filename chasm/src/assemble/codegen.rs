@@ -53,6 +53,14 @@ fn generate_instruction(
         bail!("Attempted to generate unaligned {instr:?} at {:02X}", output.len());
     }
     match instr {
+        Instruction::Ldr { dest, src } => {
+            let mut base_instr = 0b01101000_00000000u16;
+            let dest_bits = dest as u16 & 0x07;
+            let src_bits = (src as u16 & 0x07) << 3;
+            base_instr |= dest_bits | src_bits;
+
+            output.extend(&base_instr.to_le_bytes());
+        }
         Instruction::Movt { dest, value } => {
             match value {
                 HexLiteral::U16(imm16) => {

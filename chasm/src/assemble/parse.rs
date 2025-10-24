@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 
-use crate::assemble::{helpers::normalize_to_ascii_lower, AssemblyAst, AssemblyError, AssemblyTokens, GeneralRegister, HexLiteral, Instruction, Node, NodeKind, Register, Token, TokenKind};
+use crate::assemble::helpers::normalize_to_ascii_lower;
+use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, HexLiteral, Instruction, Node, NodeKind, Register, Token, TokenKind};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -96,6 +97,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
     let mut tmp_buf = [0u8; 8];
     let maybe_mnemonic = normalize_to_ascii_lower(token.lexeme, &mut tmp_buf);
     match maybe_mnemonic {
+        "ldr" => parse_ldr(token, tokens),
         "movs" => parse_movs(token, tokens),
         "movw" => parse_movw(token, tokens),
         "movt" => parse_movt(token, tokens),
@@ -125,20 +127,20 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
     }
 }
 
-fn parse_movt<'src>(movt_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+fn parse_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(Register, Token<'src>)> {
     let maybe_register = tokens.next().ok_or_else(|| {
         AssemblyError::new(
-            format!("Expected register after {} mnemonic, found EOF", movt_token.lexeme),
-            movt_token.line,
-            movt_token.column + movt_token.lexeme.len(),
-            None,
-            movt_token.source,
+            format!("Expected register after '{}', found EOF", prev_token.lexeme),
+            prev_token.line,
+            prev_token.column,
+            Some(prev_token.column + prev_token.lexeme.len()),
+            prev_token.source,
         )
     })?;
 
     let TokenKind::Identifier = maybe_register.kind else {
         let err = AssemblyError::new(
-            format!("Expected register after {} mnemonic, found {} '{}'", movt_token.lexeme, maybe_register.kind, maybe_register.lexeme),
+            format!("Expected register after '{}', found {} '{}'", prev_token.lexeme, maybe_register.kind, maybe_register.lexeme),
             maybe_register.line,
             maybe_register.column,
             Some(maybe_register.column + maybe_register.lexeme.len()),
@@ -146,9 +148,9 @@ fn parse_movt<'src>(movt_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
         );
         return Err(err.into());
     };
-    let dest_register = Register::try_from(maybe_register.lexeme).map_err(|e| {
+    let register = Register::try_from(maybe_register.lexeme).map_err(|e| {
         AssemblyError::new(
-            format!("Invalid register '{}' after {} mnemonic: {e}", maybe_register.lexeme, movt_token.lexeme),
+            format!("Invalid register '{}' after '{}': {e}", maybe_register.lexeme, prev_token.lexeme),
             maybe_register.line,
             maybe_register.column,
             Some(maybe_register.column + maybe_register.lexeme.len()),
@@ -156,15 +158,62 @@ fn parse_movt<'src>(movt_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
         )
     })?;
 
+
+    Ok((register, maybe_register))
+}
+
+fn parse_ldr<'src>(ldr_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let (dest_register, dt) = parse_register(&ldr_token, tokens)?;
+
+    let dest_register = match dest_register {
+        Register::General(reg) if (reg as u8) < 8 => reg,
+        _ => {
+            let err = AssemblyError::new(
+                format!("Expected general-purpose register (r0-r7), found '{:?}'", dest_register),
+                dt.line,
+                dt.column,
+                Some(dt.column + dt.lexeme.len()),
+                dt.source,
+            );
+            return Err(err.into());
+        }
+    };
+
+    let (src_register, st) = parse_register(&dt, tokens)?;
+    let src_register = match src_register {
+        Register::General(reg) if (reg as u8) < 8 => reg,
+        _ => {
+            let err = AssemblyError::new(
+                format!("Expected general-purpose register (r0-r7), found '{:?}'", src_register),
+                st.line,
+                st.column,
+                Some(st.column + st.lexeme.len()),
+                st.source,
+            );
+            return Err(err.into());
+        }
+    };
+
+    let node = Node {
+        kind: NodeKind::Instruction(Instruction::Ldr { dest: dest_register, src: src_register }),
+        token: ldr_token,
+    };
+
+    Ok(node)
+}
+
+fn parse_movt<'src>(movt_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let (dest_register, dt) = parse_register(&movt_token, tokens)?;
+
     let reg = match dest_register {
         Register::General(reg) => reg,
         _ => {
             let err = AssemblyError::new(
                 format!("Expected general-purpose register (r0-r15) after {} mnemonic, found '{:?}'", movt_token.lexeme, dest_register),
-                maybe_register.line,
-                maybe_register.column,
-                Some(maybe_register.column + maybe_register.lexeme.len()),
-                maybe_register.source,
+                dt.line,
+                dt.column,
+                Some(dt.column + dt.lexeme.len()),
+                dt.source,
             );
             return Err(err.into());
         }
@@ -173,10 +222,10 @@ fn parse_movt<'src>(movt_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
     let maybe_imm16 = tokens.next().ok_or_else(|| {
         AssemblyError::new(
             format!("Expected immediate value after register in {} instruction", movt_token.lexeme),
-            maybe_register.line,
-            maybe_register.column + maybe_register.lexeme.len(),
+            dt.line,
+            dt.column + dt.lexeme.len(),
             None,
-            maybe_register.source,
+            dt.source,
         )
     })?;
 
@@ -202,45 +251,17 @@ fn parse_movt<'src>(movt_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_movw<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let maybe_register = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected register after {} mnemonic, found EOF", movs_token.lexeme),
-            movs_token.line,
-            movs_token.column + movs_token.lexeme.len(),
-            None,
-            movs_token.source,
-        )
-    })?;
-
-    let TokenKind::Identifier = maybe_register.kind else {
-        let err = AssemblyError::new(
-            format!("Expected register after {} mnemonic, found {} '{}'", movs_token.lexeme, maybe_register.kind, maybe_register.lexeme),
-            maybe_register.line,
-            maybe_register.column,
-            Some(maybe_register.column + maybe_register.lexeme.len()),
-            maybe_register.source,
-        );
-        return Err(err.into());
-    };
-    let dest_register = Register::try_from(maybe_register.lexeme).map_err(|e| {
-        AssemblyError::new(
-            format!("Invalid register '{}' after {} mnemonic: {e}", maybe_register.lexeme, movs_token.lexeme),
-            maybe_register.line,
-            maybe_register.column,
-            Some(maybe_register.column + maybe_register.lexeme.len()),
-            maybe_register.source,
-        )
-    })?;
+    let (dest_register, dt) = parse_register(&movs_token, tokens)?;
 
     let reg = match dest_register {
         Register::General(reg) => reg,
         _ => {
             let err = AssemblyError::new(
                 format!("Expected general-purpose register (r0-r15) after {} mnemonic, found '{:?}'", movs_token.lexeme, dest_register),
-                maybe_register.line,
-                maybe_register.column,
-                Some(maybe_register.column + maybe_register.lexeme.len()),
-                maybe_register.source,
+                dt.line,
+                dt.column,
+                Some(dt.column + dt.lexeme.len()),
+                dt.source,
             );
             return Err(err.into());
         }
@@ -249,10 +270,10 @@ fn parse_movw<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
     let maybe_imm16 = tokens.next().ok_or_else(|| {
         AssemblyError::new(
             format!("Expected immediate value after register in {} instruction", movs_token.lexeme),
-            maybe_register.line,
-            maybe_register.column + maybe_register.lexeme.len(),
-            None,
-            maybe_register.source,
+            dt.line,
+            dt.column,
+            Some(dt.column + dt.lexeme.len()),
+            dt.source,
         )
     })?;
 
@@ -278,45 +299,17 @@ fn parse_movw<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let maybe_register = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected register after {} mnemonic, found EOF", movs_token.lexeme),
-            movs_token.line,
-            movs_token.column + movs_token.lexeme.len(),
-            None,
-            movs_token.source,
-        )
-    })?;
-
-    let TokenKind::Identifier = maybe_register.kind else {
-        let err = AssemblyError::new(
-            format!("Expected register after {} mnemonic, found {} '{}'", movs_token.lexeme, maybe_register.kind, maybe_register.lexeme),
-            maybe_register.line,
-            maybe_register.column,
-            Some(maybe_register.column + maybe_register.lexeme.len()),
-            maybe_register.source,
-        );
-        return Err(err.into());
-    };
-    let dest_register = Register::try_from(maybe_register.lexeme).map_err(|e| {
-        AssemblyError::new(
-            format!("Invalid register '{}' after {} mnemonic: {e}", maybe_register.lexeme, movs_token.lexeme),
-            maybe_register.line,
-            maybe_register.column,
-            Some(maybe_register.column + maybe_register.lexeme.len()),
-            maybe_register.source,
-        )
-    })?;
+    let (dest_register, dt) = parse_register(&movs_token, tokens)?;
 
     let dest_register = match dest_register {
         Register::General(reg) if (reg as u8) < 8 => reg,
         _ => {
             let err = AssemblyError::new(
                 format!("Expected general-purpose register (r0-r7) after {} mnemonic, found '{:?}'", movs_token.lexeme, dest_register),
-                maybe_register.line,
-                maybe_register.column,
-                Some(maybe_register.column + maybe_register.lexeme.len()),
-                maybe_register.source,
+                dt.line,
+                dt.column,
+                Some(dt.column + dt.lexeme.len()),
+                dt.source,
             );
             return Err(err.into());
         }
@@ -325,10 +318,10 @@ fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
     let maybe_imm8 = tokens.next().ok_or_else(|| {
         AssemblyError::new(
             format!("Expected immediate value after register in {} instruction", movs_token.lexeme),
-            maybe_register.line,
-            maybe_register.column + maybe_register.lexeme.len(),
-            None,
-            maybe_register.source,
+            dt.line,
+            dt.column,
+            Some(dt.column + dt.lexeme.len()),
+            dt.source,
         )
     })?;
 
@@ -354,45 +347,17 @@ fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let maybe_register = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected register after {} mnemonic, found EOF", adds_token.lexeme),
-            adds_token.line,
-            adds_token.column + adds_token.lexeme.len(),
-            None,
-            adds_token.source,
-        )
-    })?;
-
-    let TokenKind::Identifier = maybe_register.kind else {
-        let err = AssemblyError::new(
-            format!("Expected register after {} mnemonic, found {} '{}'", adds_token.lexeme, maybe_register.kind, maybe_register.lexeme),
-            maybe_register.line,
-            maybe_register.column,
-            Some(maybe_register.column + maybe_register.lexeme.len()),
-            maybe_register.source,
-        );
-        return Err(err.into());
-    };
-    let dest_register = Register::try_from(maybe_register.lexeme).map_err(|e| {
-        AssemblyError::new(
-            format!("Invalid register '{}' after {} mnemonic: {e}", maybe_register.lexeme, adds_token.lexeme),
-            maybe_register.line,
-            maybe_register.column,
-            Some(maybe_register.column + maybe_register.lexeme.len()),
-            maybe_register.source,
-        )
-    })?;
+    let (dest_register, dt) = parse_register(&adds_token, tokens)?;
 
     let dest_register = match dest_register {
         Register::General(reg) if (reg as u8) < 8 => reg,
         _ => {
             let err = AssemblyError::new(
                 format!("Expected general-purpose register (r0-r7) after {} mnemonic, found '{:?}'", adds_token.lexeme, dest_register),
-                maybe_register.line,
-                maybe_register.column,
-                Some(maybe_register.column + maybe_register.lexeme.len()),
-                maybe_register.source,
+                dt.line,
+                dt.column,
+                Some(dt.column + dt.lexeme.len()),
+                dt.source,
             );
             return Err(err.into());
         }
@@ -401,10 +366,10 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
     let maybe_imm8 = tokens.next().ok_or_else(|| {
         AssemblyError::new(
             format!("Expected immediate value after register in {} instruction", adds_token.lexeme),
-            maybe_register.line,
-            maybe_register.column + maybe_register.lexeme.len(),
-            None,
-            maybe_register.source,
+            dt.line,
+            dt.column,
+            Some(dt.column + dt.lexeme.len()),
+            dt.source,
         )
     })?;
 
@@ -434,8 +399,8 @@ fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item 
         AssemblyError::new(
             format!("Expected label after {} mnemonic, found EOF", branch_token.lexeme),
             branch_token.line,
-            branch_token.column + branch_token.lexeme.len(),
-            None,
+            branch_token.column,
+            Some(branch_token.column + branch_token.lexeme.len()),
             branch_token.source,
         )
     })?;
