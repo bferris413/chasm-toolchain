@@ -97,6 +97,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
     let mut tmp_buf = [0u8; 8];
     let maybe_mnemonic = normalize_to_ascii_lower(token.lexeme, &mut tmp_buf);
     match maybe_mnemonic {
+        "ands" => parse_ands(token, tokens),
         "ldr" => parse_ldr(token, tokens),
         "movs" => parse_movs(token, tokens),
         "movw" => parse_movw(token, tokens),
@@ -188,6 +189,46 @@ fn parse_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item
     })?;
 
     Ok((register, maybe_register))
+}
+
+fn parse_ands<'src>(ands_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let (dest_register, dt) = parse_register(&ands_token, tokens)?;
+
+    let dest_register = match dest_register {
+        Register::General(reg) if (reg as u8) < 8 => reg,
+        _ => {
+            let err = AssemblyError::new(
+                format!("Expected general-purpose register (r0-r7), found '{:?}'", dest_register),
+                dt.line,
+                dt.column,
+                Some(dt.column + dt.lexeme.len()),
+                dt.source,
+            );
+            return Err(err.into());
+        }
+    };
+
+    let (src_register, st) = parse_register(&dt, tokens)?;
+    let src_register = match src_register {
+        Register::General(reg) if (reg as u8) < 8 => reg,
+        _ => {
+            let err = AssemblyError::new(
+                format!("Expected general-purpose register (r0-r7), found '{:?}'", src_register),
+                st.line,
+                st.column,
+                Some(st.column + st.lexeme.len()),
+                st.source,
+            );
+            return Err(err.into());
+        }
+    };
+
+    let node = Node {
+        kind: NodeKind::Instruction(Instruction::Ands { dest: dest_register, src: src_register }),
+        token: ands_token,
+    };
+
+    Ok(node)
 }
 
 fn parse_str<'src>(str_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {

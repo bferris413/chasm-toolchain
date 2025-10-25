@@ -67,6 +67,7 @@ enum NodeKind {
 #[derive(Debug)]
 enum Instruction {
     Adds { dest: GeneralRegister, value: HexLiteral },
+    Ands { dest: GeneralRegister, src: GeneralRegister },
     Branch { label: String },
     Ldr  { dest: GeneralRegister, src: GeneralRegister },
     Movs { dest: GeneralRegister, value: HexLiteral },
@@ -667,5 +668,17 @@ mod tests {
         // b01100000_00111010
         // x3A60
         assert_eq!(machine_code.bytes, vec![ 0x3A, 0x60 ]);
+    }
+
+    #[test]
+    fn ands_register_gets_generated_as_t1_encoding() {
+        let source = AssemblySource::from("ANDS R6 R1".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b0100000000_001_110
+        // b01000000_00001110
+        // x0E40
+        assert_eq!(machine_code.bytes, vec![ 0x0E, 0x40 ]);
     }
 }
