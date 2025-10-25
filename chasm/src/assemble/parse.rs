@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
-use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, HexLiteral, Instruction, Node, NodeKind, Register, Token, TokenKind};
+use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, Condition, HexLiteral, Instruction, Node, NodeKind, Register, Token, TokenKind};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -106,6 +106,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
         "orrs" => parse_orrs(token, tokens),
         "str" => parse_str(token, tokens),
         "b" => parse_branch(token, tokens),
+        "beq" => parse_branch_eq(token, tokens),
         other if Register::try_from(other).is_ok() => {
             let err = AssemblyError::new(
                 format!("Expected instruction mnemonic, found register '{}'", token.lexeme),
@@ -525,9 +526,19 @@ fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item 
     let label = maybe_label;
 
     let node = Node {
-        kind: NodeKind::Instruction(Instruction::Branch { label: label.lexeme.to_string() }),
+        kind: NodeKind::Instruction(Instruction::Branch { label: label.lexeme.to_string(), cond: None }),
         token: branch_token,
     };
 
     Ok(node)
+}
+
+fn parse_branch_eq<'src>(branch_eq_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let mut branch_node = parse_branch(branch_eq_token, tokens)?;
+    let NodeKind::Instruction(Instruction::Branch { ref mut cond, .. }) = branch_node.kind else {
+        unreachable!()
+    };
+    *cond = Some(Condition::Eq);
+
+    Ok(branch_node)
 }

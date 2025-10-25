@@ -68,13 +68,19 @@ enum NodeKind {
 enum Instruction {
     Adds { dest: GeneralRegister, value: HexLiteral },
     Ands { dest: GeneralRegister, src: GeneralRegister },
-    Branch { label: String },
+    Branch { label: String, cond: Option<Condition> },
     Ldr  { dest: GeneralRegister, src: GeneralRegister },
     Movs { dest: GeneralRegister, value: HexLiteral },
     Movt { dest: GeneralRegister, value: HexLiteral },
     Movw { dest: GeneralRegister, value: HexLiteral },
     Orrs { dest: GeneralRegister, src: GeneralRegister },
     Str { dest_addr_reg: GeneralRegister, src: GeneralRegister },
+}
+
+#[derive(Debug)]
+#[repr(u8)]
+enum Condition {
+    Eq = 0b0000,
 }
 
 #[derive(Debug)]
@@ -680,5 +686,16 @@ mod tests {
         // b01000000_00001110
         // x0E40
         assert_eq!(machine_code.bytes, vec![ 0x0E, 0x40 ]);
+    }
+
+    #[test]
+    fn beq_gets_generated_as_t1_encoding() {
+        let source = AssemblySource::from("@label BEQ @label".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b11010000_11111110
+        // xFED0
+        assert_eq!(machine_code.bytes, vec![ 0xFE, 0xD0 ]);
     }
 }

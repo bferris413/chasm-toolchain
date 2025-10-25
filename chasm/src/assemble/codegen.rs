@@ -214,7 +214,7 @@ fn generate_instruction(
             };
         }
         // A7.7.12 B
-        Instruction::Branch { label } => {
+        Instruction::Branch { label, cond } => {
             // Cortex-M4F PC is 4 bytes ahead of the current instruction
             let current_pc = output.len() + 4;
             let target_addr = match labels.get(&label) {
@@ -228,16 +228,31 @@ fn generate_instruction(
             }
 
             let offset_halfwords = offset_bytes / 2;
-            if !(-2048..=2046).contains(&offset_halfwords) {
-                bail!("Branch target '{label}' is too far away (offset {offset_halfwords}), must be in range [-2048, +2046] halfwords");
+            match cond {
+                Some(c) => {
+                    // Encoding T1 only at the moment
+                    if !(-256..=254).contains(&offset_halfwords) {
+                        bail!("Branch target '{label}' is too far away (offset {offset_halfwords}), must be in range [-256, +254] halfwords");
+                    }
+                    let masked_offset = (offset_halfwords as u16) & 0xFF;
+                    let cond = (c as u16) << 8;
+
+                    let base_instr = 0b1101_0000_00000000;
+                    let encoded_branch = base_instr | cond | masked_offset;
+                    output.extend(&encoded_branch.to_le_bytes());
+                }
+                None => {
+                    // Encoding T2
+                    if !(-2048..=2046).contains(&offset_halfwords) {
+                        bail!("Branch target '{label}' is too far away (offset {offset_halfwords}), must be in range [-2048, +2046] halfwords");
+                    }
+                    let masked_offset = (offset_halfwords as u16) & 0x7FF; // first 11 bits
+
+                    let base_instr = 0b11100_00000000000;
+                    let encoded_branch = base_instr | masked_offset;
+                    output.extend(&encoded_branch.to_le_bytes());
+                }
             }
-
-            // Encoding T2
-            let masked_offset = (offset_halfwords as u16) & 0x7FF; // first 11 bits
-
-            let base_instr = 0b11100_00000000000;
-            let encoded_branch = base_instr | masked_offset;
-            output.extend(&encoded_branch.to_le_bytes());
         }
     }
 
