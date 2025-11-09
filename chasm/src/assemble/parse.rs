@@ -32,11 +32,75 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
                 let node = parse_label(token)?;
                 nodes.push(node);
             }
+            other => {
+                let err = AssemblyError::new(
+                    format!("Unexpected token kind '{}'", other),
+                    token.line,
+                    token.column,
+                    Some(token.column + token.lexeme.len()),
+                    token.source,
+                );
+                return Err(err.into());
+            }
         }
-
     }
 
     Ok(AssemblyAst { nodes })
+}
+
+fn parse_dereference<'src>(
+    prev_token: Token<'src>,
+    tokens: &mut dyn Iterator<Item = Token<'src>>
+) -> Result<(Register, Token<'src>)> {
+    let Some(maybe_lbracket) = tokens.next() else {
+        let err = AssemblyError::new(
+            format!("Expected '[' after '{}', found EOF", prev_token.lexeme),
+            prev_token.line,
+            prev_token.column,
+            Some(prev_token.column + prev_token.lexeme.len()),
+            prev_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let TokenKind::LBracket = maybe_lbracket.kind else {
+        let err = AssemblyError::new(
+            format!("Expected '[' after '{}', found '{}'", prev_token.lexeme, maybe_lbracket.lexeme),
+            maybe_lbracket.line,
+            maybe_lbracket.column,
+            Some(maybe_lbracket.column + maybe_lbracket.lexeme.len()),
+            maybe_lbracket.source,
+        );
+        return Err(err.into());
+    };
+
+    let lbracket = maybe_lbracket;
+    let (reg, rt) = parse_register(&lbracket, tokens)?;
+
+    let Some(rbracket_token) = tokens.next() else {
+        let err = AssemblyError::new(
+            format!("Expected ']' after register in dereference, found EOF"),
+            rt.line,
+            rt.column,
+            Some(rt.column + rt.lexeme.len()),
+            rt.source,
+        );
+        return Err(err.into());
+    };
+
+    let TokenKind::RBracket = rbracket_token.kind else {
+        let err = AssemblyError::new(
+            format!("Expected ']' after register in dereference, found '{}'", rbracket_token.lexeme),
+            rbracket_token.line,
+            rbracket_token.column,
+            Some(rbracket_token.column + rbracket_token.lexeme.len()),
+            rbracket_token.source,
+        );
+        return Err(err.into());
+    };
+
+
+    Ok((reg, rt))
 }
 
 fn parse_hex_literal_u32(token: Token<'_>) -> Node<'_> {
@@ -248,7 +312,7 @@ fn parse_str<'src>(str_token: Token<'src>, tokens: &mut dyn Iterator<Item = Toke
         }
     };
 
-    let (dest_addr_register, dt) = parse_register(&st, tokens)?;
+    let (dest_addr_register, dt) = parse_dereference(st, tokens)?;
     let dest_addr_reg = match dest_addr_register {
         Register::General(reg) if (reg as u8) < 8 => reg,
         _ => {
@@ -328,7 +392,7 @@ fn parse_ldr<'src>(ldr_token: Token<'src>, tokens: &mut dyn Iterator<Item = Toke
         }
     };
 
-    let (src_register, st) = parse_register(&dt, tokens)?;
+    let (src_register, st) = parse_dereference(dt, tokens)?;
     let src_register = match src_register {
         Register::General(reg) => reg,
         _ => {

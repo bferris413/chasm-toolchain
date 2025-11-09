@@ -194,6 +194,8 @@ enum TokenKind {
     HexLiteralU8,
     Identifier,
     Label,
+    LBracket,
+    RBracket,
 }
 impl Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,6 +205,8 @@ impl Display for TokenKind {
             TokenKind::HexLiteralU8 => write!(f, "hex literal (u8)"),
             TokenKind::Identifier => write!(f, "identifier"),
             TokenKind::Label => write!(f, "label"),
+            TokenKind::LBracket => write!(f, "left bracket"),
+            TokenKind::RBracket => write!(f, "right bracket"),
         }
     }
 }
@@ -604,7 +608,7 @@ mod tests {
 
     #[test]
     fn ldr_immediate_with_3_bit_src_dest_gets_generated_as_t1_encoding() {
-        let source = AssemblySource::from("LDR R1 R0".to_string());
+        let source = AssemblySource::from("LDR R1 [R0]".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 
@@ -617,7 +621,7 @@ mod tests {
 
     #[test]
     fn ldr_immediate_with_another_3_bit_src_dest_gets_generated_as_t1_encoding() {
-        let source = AssemblySource::from("LDR R4 R2".to_string());
+        let source = AssemblySource::from("LDR R4 [R2]".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 
@@ -630,7 +634,7 @@ mod tests {
 
     #[test]
     fn ldr_immediate_with_4_bit_src_gets_generated_as_t3_encoding() {
-        let source = AssemblySource::from("LDR R2 R9".to_string());
+        let source = AssemblySource::from("LDR R2 [R9]".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 
@@ -642,7 +646,7 @@ mod tests {
 
     #[test]
     fn ldr_immediate_with_4_bit_dest_gets_generated_as_t3_encoding() {
-        let source = AssemblySource::from("LDR R12 R1".to_string());
+        let source = AssemblySource::from("LDR R12 [R1]".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 
@@ -666,7 +670,7 @@ mod tests {
 
     #[test]
     fn str_immediate_gets_generated_as_t1_encoding() {
-        let source = AssemblySource::from("STR R2 R7".to_string());
+        let source = AssemblySource::from("STR R2 [R7]".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 
