@@ -34,6 +34,11 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 let label_token = tokenize_label(source, &mut chars, i, line, &mut col)?;
                 tokens.push(label_token);
             }
+            '&' => {
+                // reference
+                let ref_token = tokenize_ref(source, &mut chars, i, line, &mut col)?;
+                tokens.push(ref_token);
+            }
             '[' | ']' => {
                 let bracket = tokenize_bracket(source, i, line, &mut col);
                 tokens.push(bracket);
@@ -104,7 +109,7 @@ fn tokenize_identifier<'src>(
     let start_col = *col;
     *col += 1;
 
-    while matches!(chars.peek(), Some((_, c)) if c.is_ascii_alphanumeric()) {
+    while matches!(chars.peek(), Some((_, c)) if is_valid_identifier_char(*c)) {
         let (_, _) = chars.next().unwrap();
         *col += 1;
         cur_index += 1;
@@ -113,6 +118,46 @@ fn tokenize_identifier<'src>(
     let lexeme = &source[start_index..cur_index];
     let t = Token {
         kind: TokenKind::Identifier,
+        lexeme,
+        line,
+        column: start_col,
+        source,
+    };
+
+    Ok(t)
+}
+
+fn tokenize_ref<'src>(
+    source: &'src AssemblySource,
+    chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) -> Result<Token<'src>> {
+    let mut cur_index = start_index + 1;
+    let start_col = *col;
+    *col += 1;
+
+    while matches!(chars.peek(), Some((_, c)) if is_valid_identifier_char(*c)) {
+        let (_, _) = chars.next().unwrap();
+        *col += 1;
+        cur_index += 1;
+    }
+
+    let lexeme = &source[start_index..cur_index];
+    if lexeme.len() < 2 {
+        let err = AssemblyError::new(
+            "Reference must have at least one character after '&'".to_string(),
+            line,
+            start_col,
+            Some(*col),
+            source,
+        );
+        return Err(err.into());
+    }
+
+    let t = Token {
+        kind: TokenKind::Ref,
         lexeme,
         line,
         column: start_col,
@@ -133,7 +178,7 @@ fn tokenize_label<'src>(
     let start_col = *col;
     *col += 1;
 
-    while matches!(chars.peek(), Some((_, c)) if c.is_ascii_alphanumeric()) {
+    while matches!(chars.peek(), Some((_, c)) if is_valid_identifier_char(*c)) {
         let (_, _) = chars.next().unwrap();
         *col += 1;
         cur_index += 1;
@@ -253,4 +298,8 @@ fn tokenize_hex_literal<'src>(
     };
 
     Ok(t)
+}
+
+fn is_valid_identifier_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }

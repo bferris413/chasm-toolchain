@@ -68,7 +68,7 @@ enum NodeKind {
 enum Instruction {
     Adds { dest: GeneralRegister, value: HexLiteral },
     Ands { dest: GeneralRegister, src: GeneralRegister },
-    Branch { label: String, cond: Option<Condition> },
+    Branch { reference: String, cond: Option<Condition> },
     Ldr  { dest: GeneralRegister, src: GeneralRegister },
     Movs { dest: GeneralRegister, value: HexLiteral },
     Movt { dest: GeneralRegister, value: HexLiteral },
@@ -194,6 +194,7 @@ enum TokenKind {
     HexLiteralU8,
     Identifier,
     Label,
+    Ref,
     LBracket,
     RBracket,
 }
@@ -207,31 +208,28 @@ impl Display for TokenKind {
             TokenKind::Label => write!(f, "label"),
             TokenKind::LBracket => write!(f, "left bracket"),
             TokenKind::RBracket => write!(f, "right bracket"),
+            TokenKind::Ref => write!(f, "reference"),
         }
     }
 }
 
+#[derive(Debug)]
 struct AssemblyError {
     message: String,
     line: usize,
     column: usize,
     end_column: Option<usize>,
-    source_pretty: String,
+    source: String,
 }
 impl AssemblyError {
     fn new(message: String, line: usize, column: usize, end_column: Option<usize>, source: &AssemblySource) -> Self {
-        let source_pretty = source.source.replace('\t', "    ");
-        Self { message, line, column, end_column, source_pretty }
-    }
-}
-impl Debug for AssemblyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "error at {}:{}: {}", self.line + 1, self.column + 1, self.message)
+        let source = source.source.clone(); 
+        Self { message, line, column, end_column, source }
     }
 }
 impl Display for AssemblyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{self:?}")
+        write!(f, "error at {}:{}: {}", self.line + 1, self.column + 1, self.message)
     }
 }
 impl std::error::Error for AssemblyError {}
@@ -432,7 +430,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.labels.get("@label"), Some(&2));
+        assert_eq!(machine_code.labels.get("label"), Some(&2));
     }
 
     #[test]
@@ -446,7 +444,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Duplicate label '@label'"));
+        assert!(err.to_string().contains("Duplicate label 'label'"));
     }
 
     #[test]
@@ -462,8 +460,8 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.labels.get("@label"), Some(&2));
-        assert_eq!(machine_code.labels.get("@loop"), Some(&4));
+        assert_eq!(machine_code.labels.get("label"), Some(&2));
+        assert_eq!(machine_code.labels.get("loop"), Some(&4));
     }
 
     #[test]
@@ -472,7 +470,7 @@ mod tests {
             MOVS R0 x01
             @loop
                 ADDS R0 x01
-                B @loop
+                B &loop
         ".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
@@ -502,12 +500,12 @@ mod tests {
             MOVS R0 x01
             @loop
                 {}
-                B @loop
+                B &loop
         ", "x01\n".repeat(4096)));
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Branch target '@loop' is too far away (offset -2050)"));
+        assert!(err.to_string().contains("Branch target '&loop' is too far away (offset -2050)"));
     }
 
     #[test]
@@ -540,7 +538,7 @@ mod tests {
 
             @loop
                 ADDS R0 x01
-                B @loop
+                B &loop
         ".to_string());
         let exp_bytes = vec![
             0x00, 0x80, 0x00, 0x20, // sp addr
@@ -694,7 +692,7 @@ mod tests {
 
     #[test]
     fn beq_gets_generated_as_t1_encoding() {
-        let source = AssemblySource::from("@label BEQ @label".to_string());
+        let source = AssemblySource::from("@label BEQ &label".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 

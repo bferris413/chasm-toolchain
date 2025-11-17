@@ -566,9 +566,9 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let maybe_label = tokens.next().ok_or_else(|| {
+    let maybe_ref = tokens.next().ok_or_else(|| {
         AssemblyError::new(
-            format!("Expected label after {} mnemonic, found EOF", branch_token.lexeme),
+            format!("Expected reference after {} mnemonic, found EOF", branch_token.lexeme),
             branch_token.line,
             branch_token.column,
             Some(branch_token.column + branch_token.lexeme.len()),
@@ -576,21 +576,21 @@ fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item 
         )
     })?;
 
-    let TokenKind::Label = maybe_label.kind else {
+    let TokenKind::Ref = maybe_ref.kind else {
         let err = AssemblyError::new(
-            format!("Expected label after {} mnemonic, found {} '{}'", branch_token.lexeme, maybe_label.kind, maybe_label.lexeme),
-            maybe_label.line,
-            maybe_label.column,
-            Some(maybe_label.column + maybe_label.lexeme.len()),
-            maybe_label.source,
+            format!("Expected reference after {} mnemonic, found {} '{}'", branch_token.lexeme, maybe_ref.kind, maybe_ref.lexeme),
+            maybe_ref.line,
+            maybe_ref.column,
+            Some(maybe_ref.column + maybe_ref.lexeme.len()),
+            maybe_ref.source,
         );
         return Err(err.into());
     };
 
-    let label = maybe_label;
+    let reference = maybe_ref;
 
     let node = Node {
-        kind: NodeKind::Instruction(Instruction::Branch { label: label.lexeme.to_string(), cond: None }),
+        kind: NodeKind::Instruction(Instruction::Branch { reference: reference.lexeme.to_string(), cond: None }),
         token: branch_token,
     };
 

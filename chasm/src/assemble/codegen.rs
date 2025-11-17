@@ -21,7 +21,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
                 generate_instruction(instr, &mut code_bytes, &labels)?;
             }
             NodeKind::Label => {
-                let label = node.token.lexeme;
+                let label = &node.token.lexeme[1..]; // strip '@'
 
                 if labels.contains_key(label) {
                     let old_addr = labels.get(label).unwrap();
@@ -134,21 +134,15 @@ fn generate_instruction(
                     let mut base_hw2 = 0b00000000_00000000u16;
                     let dest = dest as u16 & 0x0F;
                     base_hw2 |= dest << 8;
-                    println!("dest: {dest:032b}");
 
                     let val = imm16.to_be_bytes();
                     let imm4 = (val[0] >> 4) as u16 & 0x0F;
                     let i = ((val[0] >> 3) as u16 & 0x01) << 10;
                     let imm3 = (val[0] as u16 & 0x07) << 12;
                     let imm8 = val[1] as u16 & 0xFF;
-                    println!("imm4: {imm4:032b}");
-                    println!("i___: {i:032b}");
-                    println!("imm3: {imm3:032b}");
-                    println!("imm8: {imm8:032b}");
 
                     base_hw1 |= imm4 | i;
                     base_hw2 |= imm3 | imm8;
-                    println!("final: {base_hw1:016b}_{base_hw2:016b}");
                     output.extend(&base_hw1.to_le_bytes());
                     output.extend(&base_hw2.to_le_bytes());
                 }
@@ -164,21 +158,15 @@ fn generate_instruction(
                     let mut base_hw2 = 0b00000000_00000000u16;
                     let dest = dest as u16 & 0x0F;
                     base_hw2 |= dest << 8;
-                    println!("dest: {dest:032b}");
 
                     let val = imm16.to_be_bytes();
                     let imm4 = (val[0] >> 4) as u16 & 0x0F;
                     let i = ((val[0] >> 3) as u16 & 0x01) << 10;
                     let imm3 = (val[0] as u16 & 0x07) << 12;
                     let imm8 = val[1] as u16 & 0xFF;
-                    println!("imm4: {imm4:032b}");
-                    println!("i___: {i:032b}");
-                    println!("imm3: {imm3:032b}");
-                    println!("imm8: {imm8:032b}");
 
                     base_hw1 |= imm4 | i;
                     base_hw2 |= imm3 | imm8;
-                    println!("final: {base_hw1:016b}_{base_hw2:016b}");
                     output.extend(&base_hw1.to_le_bytes());
                     output.extend(&base_hw2.to_le_bytes());
                 }
@@ -214,17 +202,17 @@ fn generate_instruction(
             };
         }
         // A7.7.12 B
-        Instruction::Branch { label, cond } => {
+        Instruction::Branch { reference, cond } => {
             // Cortex-M4F PC is 4 bytes ahead of the current instruction
             let current_pc = output.len() + 4;
-            let target_addr = match labels.get(&label) {
+            let target_addr = match labels.get(&reference[1..]) {
                 Some(addr) => *addr,
-                None => bail!("Undefined label '{label}' (forward references aren't supported yet)"),
+                None => bail!("Undefined reference '{reference}' (forward references aren't supported yet)"),
             };
 
             let offset_bytes = target_addr as isize - current_pc as isize;
             if offset_bytes % 2 != 0 {
-                bail!("Branch target address must be halfword-aligned, but label '{label}' is at byte address {target_addr:02X}");
+                bail!("Branch target address must be halfword-aligned, but label at '{reference}' is at byte address {target_addr:02X}");
             }
 
             let offset_halfwords = offset_bytes / 2;
@@ -232,7 +220,7 @@ fn generate_instruction(
                 Some(c) => {
                     // Encoding T1 only at the moment
                     if !(-256..=254).contains(&offset_halfwords) {
-                        bail!("Branch target '{label}' is too far away (offset {offset_halfwords}), must be in range [-256, +254] halfwords");
+                        bail!("Branch target '{reference}' is too far away (offset {offset_halfwords}), must be in range [-256, +254] halfwords");
                     }
                     let masked_offset = (offset_halfwords as u16) & 0xFF;
                     let cond = (c as u16) << 8;
@@ -244,7 +232,7 @@ fn generate_instruction(
                 None => {
                     // Encoding T2
                     if !(-2048..=2046).contains(&offset_halfwords) {
-                        bail!("Branch target '{label}' is too far away (offset {offset_halfwords}), must be in range [-2048, +2046] halfwords");
+                        bail!("Branch target '{reference}' is too far away (offset {offset_halfwords}), must be in range [-2048, +2046] halfwords");
                     }
                     let masked_offset = (offset_halfwords as u16) & 0x7FF; // first 11 bits
 
