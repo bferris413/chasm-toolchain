@@ -30,6 +30,14 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
 
                 labels.insert(label.to_string(), code_bytes.len());
             }
+            NodeKind::Ref => {
+                let reference = &node.token.lexeme[1..]; // strip '&'
+                let Some(addr) = labels.get(reference) else {
+                    bail!("Undefined label '{reference}' (forward references aren't supported yet)");
+                };
+
+                generate_ref(*addr as u32, &mut code_bytes);
+            }
             other => todo!("{other:?}"),
         }
     }
@@ -43,6 +51,10 @@ fn generate_hex_literal(lit: HexLiteral, output: &mut Vec<u8>) {
         HexLiteral::U16(value) => output.extend(&value.to_le_bytes()),
         HexLiteral::U8(value) => output.push(value),
     }
+}
+
+fn generate_ref(addr: u32, output: &mut Vec<u8>) {
+    output.extend(&addr.to_le_bytes());
 }
 
 #[allow(clippy::unusual_byte_groupings)]

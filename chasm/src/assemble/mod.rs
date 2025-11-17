@@ -62,6 +62,7 @@ enum NodeKind {
     Instruction(Instruction),
     Register(Register),
     Label,
+    Ref,
 }
 
 #[derive(Debug)]
@@ -699,5 +700,24 @@ mod tests {
         // b11010000_11111110
         // xFED0
         assert_eq!(machine_code.bytes, vec![ 0xFE, 0xD0 ]);
+    }
+
+    #[test]
+    fn standalone_ref_resolves_to_label_address() {
+        let source = AssemblySource::from("
+            x1111.1111
+            @label
+            x2222.2222
+            &label 
+        "
+        .to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x11, 0x11, 0x11, 0x11,
+            0x22, 0x22, 0x22, 0x22,
+            0x04, 0x00, 0x00, 0x00, // address of label (8 bytes in)
+        ]);
     }
 }

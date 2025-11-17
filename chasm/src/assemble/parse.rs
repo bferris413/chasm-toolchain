@@ -32,6 +32,10 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
                 let node = parse_label(token)?;
                 nodes.push(node);
             }
+            TokenKind::Ref => {
+                let node = parse_ref(token)?;
+                nodes.push(node);
+            }
             other => {
                 let err = AssemblyError::new(
                     format!("Unexpected token kind '{}'", other),
@@ -138,6 +142,18 @@ fn parse_hex_literal_u8(token: Token<'_>) -> Result<Node<'_>> {
     let node = Node {
         kind: NodeKind::HexLiteral(HexLiteral::U8(value)),
         token,
+    };
+
+    Ok(node)
+}
+
+fn parse_ref<'src>(ref_token: Token<'src>) -> Result<Node<'src>> {
+    assert!(ref_token.lexeme.starts_with('&'));
+    assert!(ref_token.lexeme.len() > 1);
+
+    let node = Node {
+        kind: NodeKind::Ref,
+        token: ref_token,
     };
 
     Ok(node)
