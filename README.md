@@ -1,2 +1,2 @@
 # chasm-toolchain
-An independent toolchain targetting embedded ARM
+An independent toolchain targetting embedded ARM.
