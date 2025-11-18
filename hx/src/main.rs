@@ -75,7 +75,6 @@ fn text_to_bin(input: &str, output: &mut impl Write) -> Result<()> {
                         .filter(|s| !s.is_empty())
                         .collect::<String>();
     
-    dbg!(&hex_digits);
 
     if hex_digits.len() % 2 != 0 {
         bail!("Input hex string must have an even number of digits");

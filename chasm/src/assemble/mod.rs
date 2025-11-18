@@ -78,7 +78,7 @@ enum Instruction {
     Str { dest_addr_reg: GeneralRegister, src: GeneralRegister },
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 #[repr(u8)]
 enum Condition {
     Eq = 0b0000,
@@ -718,6 +718,87 @@ mod tests {
             0x11, 0x11, 0x11, 0x11,
             0x22, 0x22, 0x22, 0x22,
             0x04, 0x00, 0x00, 0x00, // address of label (8 bytes in)
+        ]);
+    }
+
+    #[test]
+    fn forward_ref_resolves_to_label_address() {
+        let source = AssemblySource::from("
+            &label
+            x1111.1111
+            x2222.2222
+            x3333.3333
+            @label
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x10, 0x00, 0x00, 0x00, // address of label (16 bytes in)
+            0x11, 0x11, 0x11, 0x11,
+            0x22, 0x22, 0x22, 0x22,
+            0x33, 0x33, 0x33, 0x33,
+        ]);
+    }
+
+    #[test]
+    fn forward_ref_and_back_ref_both_resolve_to_label_address() {
+        let source = AssemblySource::from("
+            &label
+            x1111.1111
+            x2222.2222
+            @label
+            x3333.3333
+            x4444.4444
+            &label
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x0C, 0x00, 0x00, 0x00, // address of label (12 bytes in)
+            0x11, 0x11, 0x11, 0x11,
+            0x22, 0x22, 0x22, 0x22,
+            0x33, 0x33, 0x33, 0x33,
+            0x44, 0x44, 0x44, 0x44,
+            0x0C, 0x00, 0x00, 0x00, // address of label (12 bytes in)
+        ]);
+    }
+
+    #[test]
+    fn branch_to_label_supports_forward_refs() {
+        let source = AssemblySource::from("
+            B &label
+            MOVS R0 x01
+            MOVS R0 x01
+            MOVS R0 x01
+            MOVS R0 x01
+            MOVS R0 x01
+            MOVS R0 x01
+            MOVS R0 x01
+            MOVS R0 x01
+            @label
+            MOVS R0 x02
+            MOVS R0 x02
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            // branch
+            0x07, 0xE0,
+            // moves
+            0x01, 0x20,
+            0x01, 0x20,
+            0x01, 0x20,
+            0x01, 0x20,
+            0x01, 0x20,
+            0x01, 0x20,
+            0x01, 0x20,
+            0x01, 0x20,
+            // the branched to instruction
+            0x02, 0x20,
+            0x02, 0x20
         ]);
     }
 }
