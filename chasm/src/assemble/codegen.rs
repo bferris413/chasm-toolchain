@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 
-use crate::assemble::{AssemblyAst, Condition, HexLiteral, Instruction, MachineCode, NodeKind};
+use crate::assemble::{AssemblyAst, Condition, HexLiteral, Instruction, MachineCode, NodeKind, PseudoInstruction};
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
@@ -23,6 +23,9 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
             }
             NodeKind::Instruction(instr) => {
                 generate_instruction(&instr, &mut code_bytes, &labels, &mut unresolved_refs)?;
+            }
+            NodeKind::PseudoInstruction(instr) => {
+                generate_pseudo_instruction(&instr, &mut code_bytes, &labels, &mut unresolved_refs)?;
             }
             NodeKind::Label => {
                 let label = &node.token.lexeme[1..]; // strip '@'
@@ -83,6 +86,20 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
 
                     code_bytes[place..place + branch_bytes.len()].copy_from_slice(&branch_bytes);
                 }
+                Patch::ThumbAddrPseudo(thumb_patch) => {
+                    let place = thumb_patch.offset;
+                    let mut thumb_bytes = Vec::new();
+
+                    generate_thumb_addr_pseudo(
+                        &thumb_patch.reference,
+                        &mut thumb_bytes,
+                        &labels,
+                        &mut HashMap::new(),
+                        Some(place),
+                    )?;
+
+                    code_bytes[place..place + thumb_bytes.len()].copy_from_slice(&thumb_bytes);
+                }
             }
         }
     }
@@ -100,6 +117,22 @@ fn generate_hex_literal(lit: &HexLiteral, output: &mut Vec<u8>) {
 
 fn generate_ref(addr: u32, output: &mut Vec<u8>) {
     output.extend(&addr.to_le_bytes());
+}
+#[allow(clippy::unusual_byte_groupings)]
+fn generate_pseudo_instruction(
+    pseudo: &PseudoInstruction,
+    output: &mut Vec<u8>,
+    labels: &HashMap<String, usize>,
+    unresolved_refs: &mut HashMap<String, Vec<Patch>>,
+) -> Result<()> {
+    match pseudo {
+        PseudoInstruction::ThumbAddr { reference } => {
+            let not_as_patch = None;
+            generate_thumb_addr_pseudo(reference, output, labels, unresolved_refs, not_as_patch)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::unusual_byte_groupings)]
@@ -269,6 +302,44 @@ fn generate_instruction(
     Ok(())
 }
 
+fn generate_thumb_addr_pseudo(
+    reference: &str,
+    output: &mut Vec<u8>,
+    labels: &HashMap<String, usize>,
+    unresolved_refs: &mut HashMap<String, Vec<Patch>>,
+    patch_offset: Option<usize>,
+) -> Result<()> {
+    let target_addr = match labels.get(&reference[1..]) {
+        Some(addr) => *addr,
+        None => {
+            if patch_offset.is_some() {
+                // we're expected to be patching - if the label isn't present now then it never will be
+                bail!("Undefined reference '{reference}'")
+            }
+
+            // forward reference - store the info and use a dummy target to be patched later
+            let patch = Patch::ThumbAddrPseudo(ThumbAddrPseudoPatch {
+                offset: output.len(),
+                reference: reference.to_string(),
+            });
+
+            let stripped_ref = reference[1..].to_string();
+            match unresolved_refs.get_mut(&stripped_ref) {
+                Some(patches) => patches.push(patch),
+                None => {
+                    unresolved_refs.insert(stripped_ref, vec![patch]);
+                }
+            }
+
+            REF_PLACEHOLDER as usize
+        }
+    };
+
+    let target_as_thumb_addr = target_addr | 0x01;
+    output.extend(&(target_as_thumb_addr as u32).to_le_bytes());
+    Ok(())
+}
+
 fn generate_branch(
     reference: &str,
     cond: &Option<Condition>,
@@ -346,7 +417,8 @@ fn generate_branch(
 #[derive(Debug)]
 enum Patch {
     Raw(RawPatch),
-    Branch(BranchPatch)
+    Branch(BranchPatch),
+    ThumbAddrPseudo(ThumbAddrPseudoPatch),
 }
 
 #[derive(Debug)]
@@ -359,4 +431,10 @@ struct BranchPatch {
     offset: usize,
     reference: String,
     cond: Option<Condition>,
+}
+
+#[derive(Debug)]
+struct ThumbAddrPseudoPatch {
+    offset: usize,
+    reference: String,
 }

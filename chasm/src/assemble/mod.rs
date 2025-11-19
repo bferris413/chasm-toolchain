@@ -60,6 +60,7 @@ struct Node<'src> {
 enum NodeKind {
     HexLiteral(HexLiteral),
     Instruction(Instruction),
+    PseudoInstruction(PseudoInstruction),
     Register(Register),
     Label,
     Ref,
@@ -76,6 +77,11 @@ enum Instruction {
     Movw { dest: GeneralRegister, value: HexLiteral },
     Orrs { dest: GeneralRegister, src: GeneralRegister },
     Str { dest_addr_reg: GeneralRegister, src: GeneralRegister },
+}
+
+#[derive(Debug)]
+enum PseudoInstruction {
+    ThumbAddr { reference: String,  },
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -198,6 +204,9 @@ enum TokenKind {
     Ref,
     LBracket,
     RBracket,
+    LParen,
+    RParen,
+    PseudoIdentifier,
 }
 impl Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -209,7 +218,10 @@ impl Display for TokenKind {
             TokenKind::Label => write!(f, "label"),
             TokenKind::LBracket => write!(f, "left bracket"),
             TokenKind::RBracket => write!(f, "right bracket"),
+            TokenKind::LParen => write!(f, "left paren"),
+            TokenKind::RParen => write!(f, "right paren"),
             TokenKind::Ref => write!(f, "reference"),
+            TokenKind::PseudoIdentifier => write!(f, "pseudo identifier"),
         }
     }
 }
@@ -787,7 +799,7 @@ mod tests {
         assert_eq!(machine_code.bytes, vec![
             // branch
             0x07, 0xE0,
-            // moves
+            // multiple movs
             0x01, 0x20,
             0x01, 0x20,
             0x01, 0x20,
@@ -796,9 +808,47 @@ mod tests {
             0x01, 0x20,
             0x01, 0x20,
             0x01, 0x20,
-            // the branched to instruction
+            // the branched-to instruction
             0x02, 0x20,
             0x02, 0x20
+        ]);
+    }
+
+    #[test]
+    fn thumb_addr_pseudo_instr_evaluates_addr_then_ors_with_1_for_forward_refs() {
+        let source = AssemblySource::from("
+            thumb-addr!(&label)
+            @label
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x05, 0x00, 0x00, 0x00, // address of label (4 bytes in) | 1
+        ]);
+    }
+
+    #[test]
+    fn thumb_addr_pseudo_instr_evaluates_addr_then_ors_with_1_for_backward_refs() {
+        let source = AssemblySource::from("
+            x0000.0000
+            x1111.1111
+            @label
+            x2222.2222
+            x3333.3333
+            x4444.4444
+            thumb-addr!(&label)
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x00, 0x00, 0x00, 0x00,
+            0x11, 0x11, 0x11, 0x11,
+            0x22, 0x22, 0x22, 0x22, // label here
+            0x33, 0x33, 0x33, 0x33,
+            0x44, 0x44, 0x44, 0x44,
+            0x09, 0x00, 0x00, 0x00, // address of label (8 bytes in) | 1
         ]);
     }
 }

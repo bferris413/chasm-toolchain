@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
-use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, Condition, HexLiteral, Instruction, Node, NodeKind, Register, Token, TokenKind};
+use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, Condition, HexLiteral, Instruction, Node, NodeKind, PseudoInstruction, Register, Token, TokenKind};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -26,6 +26,10 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
             },
             TokenKind::Identifier => {
                 let node = parse_instruction(token, &mut tokens)?;
+                nodes.push(node);
+            }
+            TokenKind::PseudoIdentifier => {
+                let node = parse_pseudo_instruction(token, &mut tokens)?;
                 nodes.push(node);
             }
             TokenKind::Label => {
@@ -209,6 +213,101 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
             Err(err.into())
         }
     }
+}
+
+fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    assert!(matches!(token.kind, TokenKind::PseudoIdentifier));
+
+    match token.lexeme {
+        "thumb-addr!" => parse_thumb_addr_pseudo(token, tokens),
+        other => {
+            let err = AssemblyError::new(
+                format!("Expected instruction mnemonic, found unknown identifier '{}'", token.lexeme),
+                token.line,
+                token.column,
+                Some(token.column + other.len()),
+                token.source,
+            );
+            Err(err.into())
+        }
+    }
+}
+
+fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let Some(maybe_lparen) = tokens.next() else {
+        let err = AssemblyError::new(
+            format!("Expected '(' after '{}', found EOF", thumb_addr_token.lexeme),
+            thumb_addr_token.line,
+            thumb_addr_token.column,
+            Some(thumb_addr_token.column + thumb_addr_token.lexeme.len()),
+            thumb_addr_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let TokenKind::LParen = maybe_lparen.kind else {
+        let err = AssemblyError::new(
+            format!("Expected '(' after '{}', found '{}'", thumb_addr_token.lexeme, maybe_lparen.lexeme),
+            maybe_lparen.line,
+            maybe_lparen.column,
+            Some(maybe_lparen.column + maybe_lparen.lexeme.len()),
+            maybe_lparen.source,
+        );
+        return Err(err.into());
+    };
+
+    let lparen = maybe_lparen;
+    let maybe_ref = tokens.next().ok_or_else(|| {
+        AssemblyError::new(
+            format!("Expected reference after '{}', found EOF", lparen.lexeme),
+            lparen.line,
+            lparen.column,
+            Some(lparen.column + lparen.lexeme.len()),
+            lparen.source,
+        )
+    })?;
+
+    let TokenKind::Ref = maybe_ref.kind else {
+        let err = AssemblyError::new(
+            format!("Expected reference after '{}', found {} '{}'", lparen.lexeme, maybe_ref.kind, maybe_ref.lexeme),
+            maybe_ref.line,
+            maybe_ref.column,
+            Some(maybe_ref.column + maybe_ref.lexeme.len()),
+            maybe_ref.source,
+        );
+        return Err(err.into());
+    };
+
+    let reference = maybe_ref;
+
+    let Some(rparen_token) = tokens.next() else {
+        let err = AssemblyError::new(
+            format!("Expected ')' after '{}', found EOF", reference.lexeme),
+            reference.line,
+            reference.column,
+            Some(reference.column + reference.lexeme.len()),
+            reference.source,
+        );
+        return Err(err.into());
+    };
+
+    let TokenKind::RParen = rparen_token.kind else {
+        let err = AssemblyError::new(
+            format!("Expected ')' after '{}', found '{}'", reference.lexeme, rparen_token.lexeme),
+            rparen_token.line,
+            rparen_token.column,
+            Some(rparen_token.column + rparen_token.lexeme.len()),
+            rparen_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let node = Node {
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::ThumbAddr { reference: reference.lexeme.to_string() }),
+        token: thumb_addr_token,
+    };
+
+    Ok(node)
 }
 
 fn parse_imm16<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {

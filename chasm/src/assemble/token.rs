@@ -24,6 +24,10 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
             ';' => {
                 skip_comment(&mut chars, &mut col);
             }
+            '(' | ')' => {
+                let paren = tokenize_paren(source, i, line, &mut col);
+                tokens.push(paren);
+            }
             'x' => {
                 // hex literal
                 let hex_token = tokenize_hex_literal(source, &mut chars, i, line, &mut col)?;
@@ -74,6 +78,7 @@ fn skip_comment(
         *col += 1;
     }
 }
+
 fn tokenize_bracket<'src>(
     source: &'src AssemblySource,
     start_index: usize,
@@ -84,6 +89,30 @@ fn tokenize_bracket<'src>(
     let kind = match &lexeme[..] {
         "[" => TokenKind::LBracket,
         "]" => TokenKind::RBracket,
+        _ => unreachable!(),
+    }; 
+    let t = Token {
+        kind,
+        lexeme,
+        line,
+        column: *col,
+        source,
+    };
+
+    *col += 1;
+    t
+}
+
+fn tokenize_paren<'src>(
+    source: &'src AssemblySource,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) ->Token<'src> {
+    let lexeme = &source[start_index..start_index + 1];
+    let kind = match &lexeme[..] {
+        "(" => TokenKind::LParen,
+        ")" => TokenKind::RParen,
         _ => unreachable!(),
     }; 
     let t = Token {
@@ -115,9 +144,18 @@ fn tokenize_identifier<'src>(
         cur_index += 1;
     }
 
+    let mut is_pseudo = false;
+    if matches!(chars.peek(), Some((_, c)) if *c == '!') {
+        let (_, _) = chars.next().unwrap();
+        *col += 1;
+        cur_index += 1;
+        is_pseudo = true;
+    }
+
     let lexeme = &source[start_index..cur_index];
+    let kind = if is_pseudo { TokenKind::PseudoIdentifier } else { TokenKind::Identifier };
     let t = Token {
-        kind: TokenKind::Identifier,
+        kind,
         lexeme,
         line,
         column: start_col,
