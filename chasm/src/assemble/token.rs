@@ -43,6 +43,10 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 let ref_token = tokenize_ref(source, &mut chars, i, line, &mut col)?;
                 tokens.push(ref_token);
             }
+            ',' => {
+                let comma_token = tokenize_comma(source, i, line, &mut col);
+                tokens.push(comma_token);
+            }
             '[' | ']' => {
                 let bracket = tokenize_bracket(source, i, line, &mut col);
                 tokens.push(bracket);
@@ -117,6 +121,25 @@ fn tokenize_paren<'src>(
     }; 
     let t = Token {
         kind,
+        lexeme,
+        line,
+        column: *col,
+        source,
+    };
+
+    *col += 1;
+    t
+}
+
+fn tokenize_comma<'src>(
+    source: &'src AssemblySource,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) ->Token<'src> {
+    let lexeme = &source[start_index..start_index + 1];
+    let t = Token {
+        kind: TokenKind::Comma,
         lexeme,
         line,
         column: *col,

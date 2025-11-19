@@ -17,11 +17,11 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
                 nodes.push(node);
             },
             TokenKind::HexLiteralU16 => {
-                let node = parse_hex_literal_u16(token)?;
+                let node = parse_hex_literal_u16(token);
                 nodes.push(node);
             },
             TokenKind::HexLiteralU8 => {
-                let node = parse_hex_literal_u8(token)?;
+                let node = parse_hex_literal_u8(token);
                 nodes.push(node);
             },
             TokenKind::Identifier => {
@@ -131,24 +131,26 @@ fn parse_hex_literal_u32(token: Token<'_>) -> Node<'_> {
     }
 }
 
-fn parse_hex_literal_u16(token: Token<'_>) -> Result<Node<'_>> {
-    let value = u16::from_str_radix(&token.lexeme[1..], 16)?;
+fn parse_hex_literal_u16(token: Token<'_>) -> Node<'_> {
+    let value = u16::from_str_radix(&token.lexeme[1..], 16)
+        .expect("parsing u16 hex literal");
     let node = Node {
         kind: NodeKind::HexLiteral(HexLiteral::U16(value)),
         token,
     };
 
-    Ok(node)
+    node
 }
 
-fn parse_hex_literal_u8(token: Token<'_>) -> Result<Node<'_>> {
-    let value = u8::from_str_radix(&token.lexeme[1..], 16)?;
+fn parse_hex_literal_u8(token: Token<'_>) -> Node<'_> {
+    let value = u8::from_str_radix(&token.lexeme[1..], 16)
+        .expect("parsing u8 hex literal");
     let node = Node {
         kind: NodeKind::HexLiteral(HexLiteral::U8(value)),
         token,
     };
 
-    Ok(node)
+    node
 }
 
 fn parse_ref<'src>(ref_token: Token<'src>) -> Result<Node<'src>> {
@@ -220,9 +222,10 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
 
     match token.lexeme {
         "thumb-addr!" => parse_thumb_addr_pseudo(token, tokens),
+        "pad-with-to!" => parse_pad_with_to_pseudo(token, tokens),
         other => {
             let err = AssemblyError::new(
-                format!("Expected instruction mnemonic, found unknown identifier '{}'", token.lexeme),
+                format!("Found unknown pseudo-instruction '{}'", token.lexeme),
                 token.line,
                 token.column,
                 Some(token.column + other.len()),
@@ -231,6 +234,114 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
             Err(err.into())
         }
     }
+}
+
+fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let Some(maybe_lparen) = tokens.next() else {
+        let err = AssemblyError::new(
+            format!("Expected '(' after '{}', found EOF", pad_with_to_token.lexeme),
+            pad_with_to_token.line,
+            pad_with_to_token.column,
+            Some(pad_with_to_token.column + pad_with_to_token.lexeme.len()),
+            pad_with_to_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let TokenKind::LParen = maybe_lparen.kind else {
+        let err = AssemblyError::new(
+            format!("Expected '(' after '{}', found '{}'", pad_with_to_token.lexeme, maybe_lparen.lexeme),
+            maybe_lparen.line,
+            maybe_lparen.column,
+            Some(maybe_lparen.column + maybe_lparen.lexeme.len()),
+            maybe_lparen.source,
+        );
+        return Err(err.into());
+    };
+
+    let lparen = maybe_lparen;
+    let maybe_byte_literal = tokens.next().ok_or_else(|| {
+        AssemblyError::new(
+            format!("Expected 8-bit hex literal after '{}', found EOF", lparen.lexeme),
+            lparen.line,
+            lparen.column,
+            Some(lparen.column + lparen.lexeme.len()),
+            lparen.source,
+        )
+    })?;
+
+    let pad_with_u8 = parse_hex_literal_u8(maybe_byte_literal);
+    let pad_with = match pad_with_u8.kind {
+        NodeKind::HexLiteral(HexLiteral::U8(b)) => b,
+        _ => unreachable!(),
+    };
+
+    let Some(comma_token) = tokens.next() else {
+        let err = AssemblyError::new(
+            format!("Expected ',' after '{}', found EOF", pad_with_u8.token.lexeme),
+            pad_with_u8.token.line,
+            pad_with_u8.token.column,
+            Some(pad_with_u8.token.column + pad_with_u8.token.lexeme.len()),
+            pad_with_u8.token.source,
+        );
+        return Err(err.into());
+    };
+
+    let TokenKind::Comma = comma_token.kind else {
+        let err = AssemblyError::new(
+            format!("Expected ',' after '{}', found '{}'", pad_with_u8.token.lexeme, comma_token.lexeme),
+            comma_token.line,
+            comma_token.column,
+            Some(comma_token.column + comma_token.lexeme.len()),
+            comma_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let maybe_4_byte_literal = tokens.next().ok_or_else(|| {
+        AssemblyError::new(
+            format!("Expected 8-bit hex literal after '{}', found EOF", lparen.lexeme),
+            lparen.line,
+            lparen.column,
+            Some(lparen.column + lparen.lexeme.len()),
+            lparen.source,
+        )
+    })?;
+
+    let pad_to_u32 = parse_hex_literal_u32(maybe_4_byte_literal);
+    let pad_to = match pad_to_u32.kind {
+        NodeKind::HexLiteral(HexLiteral::U32(bytes)) => bytes,
+        _ => unreachable!(),
+    };
+
+    let Some(rparen_token) = tokens.next() else {
+        let err = AssemblyError::new(
+            format!("Expected ')' after '{}', found EOF", pad_to_u32.token.lexeme),
+            pad_to_u32.token.line,
+            pad_to_u32.token.column,
+            Some(pad_to_u32.token.column + pad_to_u32.token.lexeme.len()),
+            pad_to_u32.token.source,
+        );
+        return Err(err.into());
+    };
+
+    let TokenKind::RParen = rparen_token.kind else {
+        let err = AssemblyError::new(
+            format!("Expected ')' after '{}', found '{}'", pad_to_u32.token.lexeme, rparen_token.lexeme),
+            rparen_token.line,
+            rparen_token.column,
+            Some(rparen_token.column + rparen_token.lexeme.len()),
+            rparen_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let node = Node {
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::PadWithTo { pad_with, pad_to }),
+        token: pad_with_to_token,
+    };
+
+    Ok(node)
 }
 
 fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
@@ -332,7 +443,7 @@ fn parse_imm16<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = 
         return Err(err.into());
     };
 
-    let imm16_node = parse_hex_literal_u16(maybe_imm16)?;
+    let imm16_node = parse_hex_literal_u16(maybe_imm16);
 
     Ok(imm16_node)
 }
@@ -622,7 +733,7 @@ fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
         return Err(err.into());
     };
 
-    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(maybe_imm8)?.kind else { unreachable!() };
+    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(maybe_imm8).kind else { unreachable!() };
 
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Movs { dest: dest_register, value: hl }),
@@ -670,7 +781,7 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
         return Err(err.into());
     };
 
-    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(maybe_imm8)?.kind else { unreachable!() };
+    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(maybe_imm8).kind else { unreachable!() };
 
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Adds { dest: dest_register, value: hl }),

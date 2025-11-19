@@ -82,6 +82,7 @@ enum Instruction {
 #[derive(Debug)]
 enum PseudoInstruction {
     ThumbAddr { reference: String,  },
+    PadWithTo { pad_with: u8, pad_to: u32  },
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -206,6 +207,7 @@ enum TokenKind {
     RBracket,
     LParen,
     RParen,
+    Comma,
     PseudoIdentifier,
 }
 impl Display for TokenKind {
@@ -222,6 +224,7 @@ impl Display for TokenKind {
             TokenKind::RParen => write!(f, "right paren"),
             TokenKind::Ref => write!(f, "reference"),
             TokenKind::PseudoIdentifier => write!(f, "pseudo identifier"),
+            TokenKind::Comma => write!(f, "comma"),
         }
     }
 }
@@ -850,5 +853,37 @@ mod tests {
             0x44, 0x44, 0x44, 0x44,
             0x09, 0x00, 0x00, 0x00, // address of label (8 bytes in) | 1
         ]);
+    }
+
+    #[test]
+    fn pad_with_to_pseudo_instr_fills_with_bytes_to_specified_addr() {
+        let source = AssemblySource::from("
+            x2222.2222
+            pad-with-to!(x11, x0000.0100)
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        let exp_bytes = {
+            let mut bytes = vec![ 0x22, 0x22, 0x22, 0x22, ];
+            bytes.extend(vec![0x11; 0x100 - bytes.len()]);
+            bytes
+        };
+        assert_eq!(machine_code.bytes, exp_bytes);
+    }
+
+    #[test]
+    fn pad_with_to_pseudo_instr_errors_when_target_addr_is_behind_current_addr() {
+        let source = AssemblySource::from("
+            x2222.2222
+            x3333.3333
+            pad-with-to!(x11, x0000.0000)
+        ".to_string());
+
+        let machine_code = assemble_source(&source);
+
+        assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
+        let err = machine_code.unwrap_err();
+        assert!(err.to_string().contains("target address is behind current address"), "{:?}", err);
     }
 }

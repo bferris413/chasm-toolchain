@@ -130,6 +130,10 @@ fn generate_pseudo_instruction(
             let not_as_patch = None;
             generate_thumb_addr_pseudo(reference, output, labels, unresolved_refs, not_as_patch)?;
         }
+        PseudoInstruction::PadWithTo { pad_with, pad_to } => {
+            let not_as_patch = None;
+            generate_pad_with_to(*pad_with, *pad_to, output, labels, unresolved_refs, not_as_patch)?;
+        }
     }
 
     Ok(())
@@ -337,6 +341,27 @@ fn generate_thumb_addr_pseudo(
 
     let target_as_thumb_addr = target_addr | 0x01;
     output.extend(&(target_as_thumb_addr as u32).to_le_bytes());
+    Ok(())
+}
+
+fn generate_pad_with_to(
+    pad_with: u8,
+    pad_to: u32,
+    output: &mut Vec<u8>,
+
+    // Unused now, but we'll likely allow padding to label addresses in the near future,
+    // which implies reference lookups and patching.
+    _labels: &HashMap<String, usize>,
+    _unresolved_refs: &mut HashMap<String, Vec<Patch>>,
+    _patch_offset: Option<usize>,
+) -> Result<()> {
+    if output.len() > pad_to as usize {
+        bail!("Cannot pad to {pad_to:08X}, target address is behind current address {:016X}", output.len());
+    }
+
+    let bytes_needed = pad_to as usize - output.len();
+    output.extend(vec![pad_with; bytes_needed]);
+
     Ok(())
 }
 
