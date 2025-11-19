@@ -60,53 +60,9 @@ fn parse_dereference<'src>(
     prev_token: Token<'src>,
     tokens: &mut dyn Iterator<Item = Token<'src>>
 ) -> Result<(Register, Token<'src>)> {
-    let Some(maybe_lbracket) = tokens.next() else {
-        let err = AssemblyError::new(
-            format!("Expected '[' after '{}', found EOF", prev_token.lexeme),
-            prev_token.line,
-            prev_token.column,
-            Some(prev_token.column + prev_token.lexeme.len()),
-            prev_token.source,
-        );
-        return Err(err.into());
-    };
-
-    let TokenKind::LBracket = maybe_lbracket.kind else {
-        let err = AssemblyError::new(
-            format!("Expected '[' after '{}', found '{}'", prev_token.lexeme, maybe_lbracket.lexeme),
-            maybe_lbracket.line,
-            maybe_lbracket.column,
-            Some(maybe_lbracket.column + maybe_lbracket.lexeme.len()),
-            maybe_lbracket.source,
-        );
-        return Err(err.into());
-    };
-
-    let lbracket = maybe_lbracket;
+    let lbracket = next_symbol_token_as(TokenKind::LBracket, "[", &prev_token, tokens)?;
     let (reg, rt) = parse_register(&lbracket, tokens)?;
-
-    let Some(rbracket_token) = tokens.next() else {
-        let err = AssemblyError::new(
-            format!("Expected ']' after register in dereference, found EOF"),
-            rt.line,
-            rt.column,
-            Some(rt.column + rt.lexeme.len()),
-            rt.source,
-        );
-        return Err(err.into());
-    };
-
-    let TokenKind::RBracket = rbracket_token.kind else {
-        let err = AssemblyError::new(
-            format!("Expected ']' after register in dereference, found '{}'", rbracket_token.lexeme),
-            rbracket_token.line,
-            rbracket_token.column,
-            Some(rbracket_token.column + rbracket_token.lexeme.len()),
-            rbracket_token.source,
-        );
-        return Err(err.into());
-    };
-
+    let _rbracket = next_symbol_token_as(TokenKind::RBracket, "]", &rt, tokens)?;
 
     Ok((reg, rt))
 }
@@ -237,29 +193,8 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
 }
 
 fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let Some(maybe_lparen) = tokens.next() else {
-        let err = AssemblyError::new(
-            format!("Expected '(' after '{}', found EOF", pad_with_to_token.lexeme),
-            pad_with_to_token.line,
-            pad_with_to_token.column,
-            Some(pad_with_to_token.column + pad_with_to_token.lexeme.len()),
-            pad_with_to_token.source,
-        );
-        return Err(err.into());
-    };
+    let lparen = next_symbol_token_as(TokenKind::LParen, "(", &pad_with_to_token, tokens)?;
 
-    let TokenKind::LParen = maybe_lparen.kind else {
-        let err = AssemblyError::new(
-            format!("Expected '(' after '{}', found '{}'", pad_with_to_token.lexeme, maybe_lparen.lexeme),
-            maybe_lparen.line,
-            maybe_lparen.column,
-            Some(maybe_lparen.column + maybe_lparen.lexeme.len()),
-            maybe_lparen.source,
-        );
-        return Err(err.into());
-    };
-
-    let lparen = maybe_lparen;
     let maybe_byte_literal = tokens.next().ok_or_else(|| {
         AssemblyError::new(
             format!("Expected 8-bit hex literal after '{}', found EOF", lparen.lexeme),
@@ -276,35 +211,14 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
         _ => unreachable!(),
     };
 
-    let Some(comma_token) = tokens.next() else {
-        let err = AssemblyError::new(
-            format!("Expected ',' after '{}', found EOF", pad_with_u8.token.lexeme),
-            pad_with_u8.token.line,
-            pad_with_u8.token.column,
-            Some(pad_with_u8.token.column + pad_with_u8.token.lexeme.len()),
-            pad_with_u8.token.source,
-        );
-        return Err(err.into());
-    };
-
-    let TokenKind::Comma = comma_token.kind else {
-        let err = AssemblyError::new(
-            format!("Expected ',' after '{}', found '{}'", pad_with_u8.token.lexeme, comma_token.lexeme),
-            comma_token.line,
-            comma_token.column,
-            Some(comma_token.column + comma_token.lexeme.len()),
-            comma_token.source,
-        );
-        return Err(err.into());
-    };
-
+    let comma = next_symbol_token_as(TokenKind::Comma, ",", &pad_with_u8.token, tokens)?;
     let maybe_4_byte_literal = tokens.next().ok_or_else(|| {
         AssemblyError::new(
-            format!("Expected 8-bit hex literal after '{}', found EOF", lparen.lexeme),
-            lparen.line,
-            lparen.column,
-            Some(lparen.column + lparen.lexeme.len()),
-            lparen.source,
+            format!("Expected 8-bit hex literal after '{}', found EOF", comma.lexeme),
+            comma.line,
+            comma.column,
+            Some(comma.column + comma.lexeme.len()),
+            comma.source,
         )
     })?;
 
@@ -314,27 +228,7 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
         _ => unreachable!(),
     };
 
-    let Some(rparen_token) = tokens.next() else {
-        let err = AssemblyError::new(
-            format!("Expected ')' after '{}', found EOF", pad_to_u32.token.lexeme),
-            pad_to_u32.token.line,
-            pad_to_u32.token.column,
-            Some(pad_to_u32.token.column + pad_to_u32.token.lexeme.len()),
-            pad_to_u32.token.source,
-        );
-        return Err(err.into());
-    };
-
-    let TokenKind::RParen = rparen_token.kind else {
-        let err = AssemblyError::new(
-            format!("Expected ')' after '{}', found '{}'", pad_to_u32.token.lexeme, rparen_token.lexeme),
-            rparen_token.line,
-            rparen_token.column,
-            Some(rparen_token.column + rparen_token.lexeme.len()),
-            rparen_token.source,
-        );
-        return Err(err.into());
-    };
+    let _rparen = next_symbol_token_as(TokenKind::RParen, ")", &pad_to_u32.token, tokens)?;
 
     let node = Node {
         kind: NodeKind::PseudoInstruction(PseudoInstruction::PadWithTo { pad_with, pad_to }),
@@ -345,73 +239,9 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
 }
 
 fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let Some(maybe_lparen) = tokens.next() else {
-        let err = AssemblyError::new(
-            format!("Expected '(' after '{}', found EOF", thumb_addr_token.lexeme),
-            thumb_addr_token.line,
-            thumb_addr_token.column,
-            Some(thumb_addr_token.column + thumb_addr_token.lexeme.len()),
-            thumb_addr_token.source,
-        );
-        return Err(err.into());
-    };
-
-    let TokenKind::LParen = maybe_lparen.kind else {
-        let err = AssemblyError::new(
-            format!("Expected '(' after '{}', found '{}'", thumb_addr_token.lexeme, maybe_lparen.lexeme),
-            maybe_lparen.line,
-            maybe_lparen.column,
-            Some(maybe_lparen.column + maybe_lparen.lexeme.len()),
-            maybe_lparen.source,
-        );
-        return Err(err.into());
-    };
-
-    let lparen = maybe_lparen;
-    let maybe_ref = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected reference after '{}', found EOF", lparen.lexeme),
-            lparen.line,
-            lparen.column,
-            Some(lparen.column + lparen.lexeme.len()),
-            lparen.source,
-        )
-    })?;
-
-    let TokenKind::Ref = maybe_ref.kind else {
-        let err = AssemblyError::new(
-            format!("Expected reference after '{}', found {} '{}'", lparen.lexeme, maybe_ref.kind, maybe_ref.lexeme),
-            maybe_ref.line,
-            maybe_ref.column,
-            Some(maybe_ref.column + maybe_ref.lexeme.len()),
-            maybe_ref.source,
-        );
-        return Err(err.into());
-    };
-
-    let reference = maybe_ref;
-
-    let Some(rparen_token) = tokens.next() else {
-        let err = AssemblyError::new(
-            format!("Expected ')' after '{}', found EOF", reference.lexeme),
-            reference.line,
-            reference.column,
-            Some(reference.column + reference.lexeme.len()),
-            reference.source,
-        );
-        return Err(err.into());
-    };
-
-    let TokenKind::RParen = rparen_token.kind else {
-        let err = AssemblyError::new(
-            format!("Expected ')' after '{}', found '{}'", reference.lexeme, rparen_token.lexeme),
-            rparen_token.line,
-            rparen_token.column,
-            Some(rparen_token.column + rparen_token.lexeme.len()),
-            rparen_token.source,
-        );
-        return Err(err.into());
-    };
+    let lparen = next_symbol_token_as(TokenKind::LParen, "(", &thumb_addr_token, tokens)?;
+    let reference = next_symbol_token_as(TokenKind::Ref, "&reference", &lparen, tokens)?;
+    let _rparen = next_symbol_token_as(TokenKind::RParen, ")", &reference, tokens)?;
 
     let node = Node {
         kind: NodeKind::PseudoInstruction(PseudoInstruction::ThumbAddr { reference: reference.lexeme.to_string() }),
@@ -422,53 +252,14 @@ fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn
 }
 
 fn parse_imm16<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let maybe_imm16 = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected 16-bit immediate value after {}", prev_token.lexeme),
-            prev_token.line,
-            prev_token.column,
-            Some(prev_token.column + prev_token.lexeme.len()),
-            prev_token.source,
-        )
-    })?;
-
-    let TokenKind::HexLiteralU16 = maybe_imm16.kind else {
-        let err = AssemblyError::new(
-            format!("Expected 16-bit immediate value after {}, found '{}'", prev_token.lexeme, maybe_imm16.lexeme),
-            maybe_imm16.line,
-            maybe_imm16.column,
-            Some(maybe_imm16.column + maybe_imm16.lexeme.len()),
-            maybe_imm16.source,
-        );
-        return Err(err.into());
-    };
-
-    let imm16_node = parse_hex_literal_u16(maybe_imm16);
+    let imm16 = next_symbol_token_as(TokenKind::HexLiteralU16, "u16 hex literal", prev_token, tokens)?;
+    let imm16_node = parse_hex_literal_u16(imm16);
 
     Ok(imm16_node)
 }
 
 fn parse_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(Register, Token<'src>)> {
-    let maybe_register = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected register after '{}', found EOF", prev_token.lexeme),
-            prev_token.line,
-            prev_token.column,
-            Some(prev_token.column + prev_token.lexeme.len()),
-            prev_token.source,
-        )
-    })?;
-
-    let TokenKind::Identifier = maybe_register.kind else {
-        let err = AssemblyError::new(
-            format!("Expected register after '{}', found {} '{}'", prev_token.lexeme, maybe_register.kind, maybe_register.lexeme),
-            maybe_register.line,
-            maybe_register.column,
-            Some(maybe_register.column + maybe_register.lexeme.len()),
-            maybe_register.source,
-        );
-        return Err(err.into());
-    };
+    let maybe_register = next_symbol_token_as(TokenKind::Identifier, "register", prev_token, tokens)?;
     let register = Register::try_from(maybe_register.lexeme).map_err(|e| {
         AssemblyError::new(
             format!("Invalid register '{}' after '{}': {e}", maybe_register.lexeme, prev_token.lexeme),
@@ -712,28 +503,8 @@ fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
         }
     };
 
-    let maybe_imm8 = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected immediate value after register in {} instruction", movs_token.lexeme),
-            dt.line,
-            dt.column,
-            Some(dt.column + dt.lexeme.len()),
-            dt.source,
-        )
-    })?;
-
-    let TokenKind::HexLiteralU8 = maybe_imm8.kind else {
-        let err = AssemblyError::new(
-            format!("Expected 8-bit immediate value after register in {} instruction, found '{}'", movs_token.lexeme, maybe_imm8.lexeme),
-            maybe_imm8.line,
-            maybe_imm8.column,
-            Some(maybe_imm8.column + maybe_imm8.lexeme.len()),
-            maybe_imm8.source,
-        );
-        return Err(err.into());
-    };
-
-    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(maybe_imm8).kind else { unreachable!() };
+    let hex_u8 = next_symbol_token_as(TokenKind::HexLiteralU8, "8-bit hex literal", &dt, tokens)?;
+    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(hex_u8).kind else { unreachable!() };
 
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Movs { dest: dest_register, value: hl }),
@@ -760,28 +531,8 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
         }
     };
 
-    let maybe_imm8 = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected immediate value after register in {} instruction", adds_token.lexeme),
-            dt.line,
-            dt.column,
-            Some(dt.column + dt.lexeme.len()),
-            dt.source,
-        )
-    })?;
-
-    let TokenKind::HexLiteralU8 = maybe_imm8.kind else {
-        let err = AssemblyError::new(
-            format!("Expected 8-bit immediate value after register in {} instruction, found '{}'", adds_token.lexeme, maybe_imm8.lexeme),
-            maybe_imm8.line,
-            maybe_imm8.column,
-            Some(maybe_imm8.column + maybe_imm8.lexeme.len()),
-            maybe_imm8.source,
-        );
-        return Err(err.into());
-    };
-
-    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(maybe_imm8).kind else { unreachable!() };
+    let hex_u8 = next_symbol_token_as(TokenKind::HexLiteralU8, "8-bit hex literal", &dt, tokens)?;
+    let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(hex_u8).kind else { unreachable!() };
 
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Adds { dest: dest_register, value: hl }),
@@ -792,29 +543,7 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let maybe_ref = tokens.next().ok_or_else(|| {
-        AssemblyError::new(
-            format!("Expected reference after {} mnemonic, found EOF", branch_token.lexeme),
-            branch_token.line,
-            branch_token.column,
-            Some(branch_token.column + branch_token.lexeme.len()),
-            branch_token.source,
-        )
-    })?;
-
-    let TokenKind::Ref = maybe_ref.kind else {
-        let err = AssemblyError::new(
-            format!("Expected reference after {} mnemonic, found {} '{}'", branch_token.lexeme, maybe_ref.kind, maybe_ref.lexeme),
-            maybe_ref.line,
-            maybe_ref.column,
-            Some(maybe_ref.column + maybe_ref.lexeme.len()),
-            maybe_ref.source,
-        );
-        return Err(err.into());
-    };
-
-    let reference = maybe_ref;
-
+    let reference = next_symbol_token_as(TokenKind::Ref, "&reference", &branch_token, tokens)?;
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Branch { reference: reference.lexeme.to_string(), cond: None }),
         token: branch_token,
@@ -831,4 +560,37 @@ fn parse_branch_eq<'src>(branch_eq_token: Token<'src>, tokens: &mut dyn Iterator
     *cond = Some(Condition::Eq);
 
     Ok(branch_node)
+}
+
+fn next_symbol_token_as<'src>(
+    kind: TokenKind,
+    sym: &str,
+    prev_token: &Token<'src>,
+    tokens: &mut dyn Iterator<Item = Token<'src>>
+) -> Result<Token<'src>> {
+    let Some(maybe_kind) = tokens.next() else {
+        let err = AssemblyError::new(
+            format!("Expected '{sym}' after '{}', found EOF", prev_token.lexeme),
+            prev_token.line,
+            prev_token.column,
+            Some(prev_token.column + prev_token.lexeme.len()),
+            prev_token.source,
+        );
+        return Err(err.into());
+    };
+
+    if kind != maybe_kind.kind {
+        let err = AssemblyError::new(
+            format!("Expected '{sym}' after '{}', found '{}'", prev_token.lexeme, maybe_kind.lexeme),
+            maybe_kind.line,
+            maybe_kind.column,
+            Some(maybe_kind.column + maybe_kind.lexeme.len()),
+            maybe_kind.source,
+        );
+        return Err(err.into());
+    };
+
+    let token = maybe_kind;
+
+    Ok(token)
 }

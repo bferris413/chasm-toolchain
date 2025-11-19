@@ -195,7 +195,7 @@ struct Token<'src> {
     source: &'src AssemblySource,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum TokenKind {
     HexLiteralU32,
     HexLiteralU16,
@@ -228,6 +228,7 @@ impl Display for TokenKind {
         }
     }
 }
+
 
 #[derive(Debug)]
 struct AssemblyError {
@@ -351,7 +352,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Expected immediate value after register in MOVS instruction"));
+        assert!(err.to_string().contains("Expected '8-bit hex literal' after 'R0'"), "Err: {}", err);
     }
 
     #[test]
@@ -369,7 +370,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Expected register after 'MOVS', found hex literal (u8) 'xFF'"));
+        assert!(err.to_string().contains("Expected 'register' after 'MOVS', found 'xFF'"), "Err: {}", err);
     }
 
     #[test]
@@ -378,7 +379,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Expected register after 'MOVS', found EOF"));
+        assert!(err.to_string().contains("Expected 'register' after 'MOVS', found EOF"), "Err: {}", err);
     }
 
     #[test]
@@ -414,7 +415,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Expected immediate value after register in ADDS"));
+        assert!(err.to_string().contains("Expected '8-bit hex literal' after 'R7'"), "Err: {}", err);
     }
 
     #[test]
@@ -423,8 +424,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        dbg!(&err);
-        assert!(err.to_string().contains("Invalid register 'abc' after 'ADDS'"));
+        assert!(err.to_string().contains("Invalid register 'abc' after 'ADDS'"), "Err: {}", err);
     }
 
     #[test]
@@ -433,7 +433,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Expected register after 'ADDS', found EOF"));
+        assert!(err.to_string().contains("Expected 'register' after 'ADDS', found EOF"), "Err: {}", err);
     }
 
     #[test]
