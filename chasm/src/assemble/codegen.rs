@@ -164,6 +164,20 @@ fn generate_instruction(
 
             output.extend(&base_instr.to_le_bytes());
         }
+        // A7.7.36 EOR(register)
+        Instruction::Eors { dest, src } => {
+            // Encoding T1
+            if ((*dest as u8) | (*src as u8)) > 7 {
+                bail!("Only registers R0-R7 are supported for EORS instruction in Thumb-1 T1 encoding");
+            }
+
+            let mut base_instr = 0b01000000_01000000u16;
+            let dest_bits = *dest as u16 & 0x07;
+            let src_bits = (*src as u16 & 0x07) << 3;
+            base_instr |= dest_bits | src_bits;
+
+            output.extend(&base_instr.to_le_bytes());
+        }
         // A7.7.161 STR(immediate)
         Instruction::Str { dest_addr_reg, src } => {
             if (*dest_addr_reg as u8) < 8 && (*src as u8) < 8 {

@@ -71,6 +71,7 @@ enum Instruction {
     Adds { dest: GeneralRegister, value: HexLiteral },
     Ands { dest: GeneralRegister, src: GeneralRegister },
     Branch { reference: String, cond: Option<Condition> },
+    Eors { dest: GeneralRegister, src: GeneralRegister },
     Ldr  { dest: GeneralRegister, src: GeneralRegister },
     Movs { dest: GeneralRegister, value: HexLiteral },
     Movt { dest: GeneralRegister, value: HexLiteral },
@@ -212,6 +213,7 @@ enum TokenKind {
 }
 impl Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The non-symbol representation of a token's kind
         match self {
             TokenKind::HexLiteralU32 => write!(f, "hex literal (u32)"),
             TokenKind::HexLiteralU16 => write!(f, "hex literal (u16)"),
@@ -885,5 +887,27 @@ mod tests {
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err();
         assert!(err.to_string().contains("target address is behind current address"), "{:?}", err);
+    }
+
+    #[test]
+    fn eors_with_two_register_ops_gets_generated_as_thumb1_t1() {
+        let source = AssemblySource::from("EORS R1 R7".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // 01000000_01_111_001
+        // 01000000_01111001
+        assert_eq!(machine_code.bytes, vec![0x79, 0x40]);
+    }
+
+    #[test]
+    fn eors_with_single_register_errors() {
+        let source = AssemblySource::from("EORS R1".to_string());
+
+        let machine_code = assemble_source(&source);
+
+        assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
+        let err = machine_code.unwrap_err().to_string();
+        assert!(err.contains("Expected 'register' after 'R1'"), "{err}");
     }
 }
