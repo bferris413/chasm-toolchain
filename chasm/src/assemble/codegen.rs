@@ -315,6 +315,14 @@ fn generate_instruction(
             let not_as_patch = None;
             generate_branch(reference, cond, output, labels, unresolved_refs, not_as_patch)?;
         }
+        // A7.7.20 BX
+        Instruction::BranchExchange { branch_reg } => {
+            let reg = branch_reg.to_u8() << 3;
+            let mut base_instr = 0b01000111_00000000u16;
+            base_instr |= reg as u16;
+
+            output.extend(&base_instr.to_le_bytes());
+        }
     }
 
     Ok(())
@@ -418,12 +426,12 @@ fn generate_branch(
         }
     };
 
-    let offset_bytes = dbg!(dbg!(target_addr as isize) - dbg!(instr_pc as isize));
+    let offset_bytes = target_addr as isize - instr_pc as isize;
     if offset_bytes % 2 != 0 {
         bail!("Branch target address must be halfword-aligned, but label at '{reference}' is at byte address {target_addr:02X}");
     }
 
-    let offset_halfwords = dbg!(offset_bytes / 2);
+    let offset_halfwords = offset_bytes / 2;
     match cond {
         Some(c) => {
             // Encoding T1 only at the moment
@@ -442,11 +450,11 @@ fn generate_branch(
             if !(-2048..=2046).contains(&offset_halfwords) {
                 bail!("Branch target '{reference}' is too far away (offset {offset_halfwords}), must be in range [-2048, +2046] halfwords");
             }
-            let masked_offset = dbg!((offset_halfwords as u16) & 0x7FF); // first 11 bits
+            let masked_offset = (offset_halfwords as u16) & 0x7FF; // first 11 bits
 
             let base_instr = 0b11100_00000000000;
-            let encoded_branch = dbg!(base_instr | masked_offset);
-            output.extend(dbg!(&encoded_branch.to_le_bytes()));
+            let encoded_branch = base_instr | masked_offset;
+            output.extend(&encoded_branch.to_le_bytes());
         }
     }
 

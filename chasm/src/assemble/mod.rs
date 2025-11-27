@@ -71,6 +71,7 @@ enum Instruction {
     Adds { dest: GeneralRegister, value: HexLiteral },
     Ands { dest: GeneralRegister, src: GeneralRegister },
     Branch { reference: String, cond: Option<Condition> },
+    BranchExchange { branch_reg: BranchableRegister },
     Eors { dest: GeneralRegister, src: GeneralRegister },
     Ldr  { dest: GeneralRegister, src: GeneralRegister },
     Movs { dest: GeneralRegister, value: HexLiteral },
@@ -135,6 +136,37 @@ impl TryFrom<&str> for Register {
             "basepri" => Ok(Register::Special(SpecialRegister::Basepri)),
             "control" => Ok(Register::Special(SpecialRegister::Control)),
             other => bail!("Unknown register '{other}'"),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum BranchableRegister {
+    General(GeneralRegister),
+    SP,
+    LR,
+    PC,
+}
+impl BranchableRegister {
+    fn to_u8(&self) -> u8 {
+        match self {
+            BranchableRegister::General(gen_reg) => *gen_reg as u8,
+            BranchableRegister::SP => 13,
+            BranchableRegister::LR => 14,
+            BranchableRegister::PC => 15,
+        }
+    }
+}
+
+impl TryFrom<Register> for BranchableRegister {
+    type Error = Error;
+    fn try_from(reg: Register) -> Result<Self, Self::Error> {
+        match reg {
+            Register::General(gen_reg) => Ok(BranchableRegister::General(gen_reg)),
+            Register::SP => Ok(BranchableRegister::SP),
+            Register::LR => Ok(BranchableRegister::LR),
+            Register::PC => Ok(BranchableRegister::PC),
+            Register::Special(r) => bail!("Special register '{r:?}' cannot be used in branch instructions"),
         }
     }
 }
@@ -909,5 +941,16 @@ mod tests {
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err().to_string();
         assert!(err.contains("Expected 'register' after 'R1'"), "{err}");
+    }
+
+    #[test]
+    fn bx_with_lr_gets_generated_as_thumb1_t1() {
+        let source = AssemblySource::from("BX LR".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // 01000111_0_1110_000
+        // 01000111_01110000
+        assert_eq!(machine_code.bytes, vec![0x70, 0x47]);
     }
 }

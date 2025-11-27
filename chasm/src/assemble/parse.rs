@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
-use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, Condition, HexLiteral, Instruction, Node, NodeKind, PseudoInstruction, Register, Token, TokenKind};
+use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, HexLiteral, Instruction, Node, NodeKind, PseudoInstruction, Register, Token, TokenKind};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -148,6 +148,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
         "orrs" => parse_orrs(token, tokens),
         "str" => parse_str(token, tokens),
         "b" => parse_branch(token, tokens),
+        "bx" => parse_branch_exchange(token, tokens),
         "beq" => parse_branch_eq(token, tokens),
         "eors" => parse_eors(token, tokens),
         other if Register::try_from(other).is_ok() => {
@@ -273,6 +274,23 @@ fn parse_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item
 
     Ok((register, maybe_register))
 }
+
+fn parse_branchable_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(BranchableRegister, Token<'src>)> {
+    let (reg, rt) = parse_register(prev_token, tokens)?;
+    let gen_reg = BranchableRegister::try_from(reg).map_err(|e| {
+        AssemblyError::new(
+            format!("Invalid branchable register '{}' after '{}': {e}", rt.lexeme, prev_token.lexeme),
+            rt.line,
+            rt.column,
+            Some(rt.column + rt.lexeme.len()),
+            rt.source,
+        )
+
+    })?;
+
+    Ok((gen_reg, rt))
+}
+
 fn parse_eors<'src>(eors_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
     let (dest_register, dt) = parse_register(&eors_token, tokens)?;
 
@@ -587,6 +605,16 @@ fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item 
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Branch { reference: reference.lexeme.to_string(), cond: None }),
         token: branch_token,
+    };
+
+    Ok(node)
+}
+
+fn parse_branch_exchange<'src>(bx_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let (gen_reg, _rt) = parse_branchable_register(&bx_token, tokens)?;
+    let node = Node {
+        kind: NodeKind::Instruction(Instruction::BranchExchange { branch_reg: gen_reg }),
+        token: bx_token,
     };
 
     Ok(node)
