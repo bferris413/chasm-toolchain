@@ -148,6 +148,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
         "orrs" => parse_orrs(token, tokens),
         "str" => parse_str(token, tokens),
         "b" => parse_branch(token, tokens),
+        "bl" => parse_branch_with_link(token, tokens),
         "bx" => parse_branch_exchange(token, tokens),
         "beq" => parse_branch_eq(token, tokens),
         "eors" => parse_eors(token, tokens),
@@ -604,6 +605,16 @@ fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item 
     let reference = next_symbol_token_as(TokenKind::Ref, "&reference", &branch_token, tokens)?;
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Branch { reference: reference.lexeme.to_string(), cond: None }),
+        token: branch_token,
+    };
+
+    Ok(node)
+}
+
+fn parse_branch_with_link<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let reference = next_symbol_token_as(TokenKind::Ref, "&reference", &branch_token, tokens)?;
+    let node = Node {
+        kind: NodeKind::Instruction(Instruction::BranchWithLink { reference: reference.lexeme.to_string(), cond: None }),
         token: branch_token,
     };
 

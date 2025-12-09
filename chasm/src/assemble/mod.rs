@@ -72,6 +72,7 @@ enum Instruction {
     Ands { dest: GeneralRegister, src: GeneralRegister },
     Branch { reference: String, cond: Option<Condition> },
     BranchExchange { branch_reg: BranchableRegister },
+    BranchWithLink { reference: String, cond: Option<Condition> },
     Eors { dest: GeneralRegister, src: GeneralRegister },
     Ldr  { dest: GeneralRegister, src: GeneralRegister },
     Movs { dest: GeneralRegister, value: HexLiteral },
@@ -555,7 +556,7 @@ mod tests {
 
         let err = assemble_source(&source).unwrap_err();
 
-        assert!(err.to_string().contains("Branch target '&loop' is too far away (offset -2050)"));
+        assert!(err.to_string().contains("Branch target '&loop' is too far away (offset -4100)"), "Err: {}", err);
     }
 
     #[test]
@@ -952,5 +953,49 @@ mod tests {
         // 01000111_0_1110_000
         // 01000111_01110000
         assert_eq!(machine_code.bytes, vec![0x70, 0x47]);
+    }
+
+    #[test]
+    fn bl_with_forward_label_gets_generated_with_positive_addr() {
+        let source = AssemblySource::from("
+            BL &label
+            x0000.0000
+            x1111.1111
+            @label
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // 11110_S_XXXXXXXXXX_11_X_1_X_XXXXXXXXXXX
+        // b11110_0_0000000000_11_0_1_0_00000001100
+        assert_eq!(machine_code.bytes, vec![
+            0x00, 0xF0, 0x04, 0xF8,
+            0x00, 0x00, 0x00, 0x00,
+            0x11, 0x11, 0x11, 0x11
+        ]);
+    }
+
+    #[test]
+    fn bl_with_backward_label_gets_generated_with_negative_addr() {
+        let source = AssemblySource::from("
+            @label
+            x0000.0000
+            x1111.1111
+            x2222.2222
+            x3333.3333
+            BL &label
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // 11110_S_XXXXXXXXXX_11_X_1_X_XXXXXXXXXXX
+        // b11110_0_0000000000_11_0_1_0_00000001100
+        assert_eq!(machine_code.bytes, vec![
+            0x00, 0x00, 0x00, 0x00,
+            0x11, 0x11, 0x11, 0x11,
+            0x22, 0x22, 0x22, 0x22,
+            0x33, 0x33, 0x33, 0x33,
+            0xFF, 0xF7, 0xF6, 0xFF,
+        ]);
     }
 }

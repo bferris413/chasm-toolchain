@@ -86,6 +86,21 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
 
                     code_bytes[place..place + branch_bytes.len()].copy_from_slice(&branch_bytes);
                 }
+                Patch::BranchWithLink(branch_patch) => {
+                    let place = branch_patch.offset;
+                    let mut branch_bytes = Vec::new();
+
+                    generate_branch_with_link(
+                        &branch_patch.reference,
+                        &branch_patch.cond,
+                        &mut branch_bytes,
+                        &labels,
+                        &mut HashMap::new(),
+                        Some(place),
+                    )?;
+
+                    code_bytes[place..place + branch_bytes.len()].copy_from_slice(&branch_bytes);
+                }
                 Patch::ThumbAddrPseudo(thumb_patch) => {
                     let place = thumb_patch.offset;
                     let mut thumb_bytes = Vec::new();
@@ -315,6 +330,11 @@ fn generate_instruction(
             let not_as_patch = None;
             generate_branch(reference, cond, output, labels, unresolved_refs, not_as_patch)?;
         }
+        // A7.7.18 BL
+        Instruction::BranchWithLink { reference, cond } => {
+            let not_as_patch = None;
+            generate_branch_with_link(reference, cond, output, labels, unresolved_refs, not_as_patch)?;
+        }
         // A7.7.20 BX
         Instruction::BranchExchange { branch_reg } => {
             let reg = branch_reg.to_u8() << 3;
@@ -386,6 +406,86 @@ fn generate_pad_with_to(
 
     Ok(())
 }
+fn generate_branch_with_link(
+    reference: &str,
+    cond: &Option<Condition>,
+    output: &mut Vec<u8>,
+    labels: &HashMap<String, usize>,
+    unresolved_refs: &mut HashMap<String, Vec<Patch>>,
+    patch_offset: Option<usize>,
+) -> Result<()> {
+    // Cortex-M4F PC is 4 bytes ahead of the branch instruction
+    let instr_pc = dbg!(patch_offset.as_ref()
+        .map_or_else(|| output.len() + 4, |offset| offset + 4));
+
+    println!("Generating BL to '{reference}' at instr PC {:02X}", instr_pc);
+    let target_addr = match dbg!(labels.get(&reference[1..])) {
+        Some(addr) => *addr,
+        None => {
+            if dbg!(patch_offset.is_some()) {
+                // we're expected to be patching - if the label isn't present now then it never will be
+                bail!("Undefined reference '{reference}'")
+            }
+
+            // forward reference - store the info and use a dummy target to be patched later
+            let patch = Patch::BranchWithLink(BranchWithLinkPatch {
+                offset: output.len(),
+                reference: reference.to_string(),
+                cond: *cond,
+            });
+
+            let stripped_ref = reference[1..].to_string();
+            match unresolved_refs.get_mut(&stripped_ref) {
+                Some(patches) => patches.push(patch),
+                None => {
+                    unresolved_refs.insert(stripped_ref, vec![patch]);
+                }
+            }
+
+            dbg!(output.len() + 4)
+        }
+    };
+
+    let offset_bytes = dbg!(target_addr as isize - instr_pc as isize);
+    if offset_bytes % 2 != 0 {
+        bail!("Branch target address must be halfword-aligned, but label at '{reference}' is at byte address {target_addr:02X}");
+    }
+
+    match cond {
+        Some(_c) => {
+            todo!()
+        }
+        None => {
+            // Encoding T1
+            if !(-16777216..=16777214).contains(&offset_bytes) {
+                bail!("Branch target '{reference}' is too far away (offset {offset_bytes}), must be in range [-16777216, +16777214] bytes");
+            }
+            let mut top_half = 0b11110_0_0000000000;
+            let mut bot_half = 0b11_0_1_0_00000000000;
+            
+            let offset_halfwords = (offset_bytes >> 1) as usize;
+            let imm11 = (offset_halfwords & 0x7FF) as u16;
+            let imm10 = ((offset_halfwords >> 11) & 0x3FF) as u16;
+            let s = if offset_bytes < 0 { 1u16 } else { 0u16 };
+            let i2 = ((offset_halfwords >> 21) & 0x01) as u16;
+            let j2 = ((!i2) ^ s) & 0x01;
+            let i1 = ((offset_halfwords >> 22) & 0x01) as u16;
+            let j1 = ((!i1) ^ s) & 0x01;
+
+            top_half |= imm10;
+            top_half |= s << 10;
+
+            bot_half |= imm11;
+            bot_half |= j2 << 11;
+            bot_half |= j1 << 13;
+
+            output.extend(&top_half.to_le_bytes());
+            output.extend(&bot_half.to_le_bytes());
+        }
+    }
+
+    Ok(())
+}
 
 fn generate_branch(
     reference: &str,
@@ -434,9 +534,9 @@ fn generate_branch(
     let offset_halfwords = offset_bytes / 2;
     match cond {
         Some(c) => {
-            // Encoding T1 only at the moment
-            if !(-256..=254).contains(&offset_halfwords) {
-                bail!("Branch target '{reference}' is too far away (offset {offset_halfwords}), must be in range [-256, +254] halfwords");
+            // Encoding T1
+            if !(-256..=254).contains(&offset_bytes) {
+                bail!("Branch target '{reference}' is too far away (offset {offset_bytes}), must be in range [-256, +254] bytes");
             }
             let masked_offset = (offset_halfwords as u16) & 0xFF;
             let cond = (*c as u16) << 8;
@@ -447,8 +547,8 @@ fn generate_branch(
         }
         None => {
             // Encoding T2
-            if !(-2048..=2046).contains(&offset_halfwords) {
-                bail!("Branch target '{reference}' is too far away (offset {offset_halfwords}), must be in range [-2048, +2046] halfwords");
+            if !(-2048..=2046).contains(&offset_bytes) {
+                bail!("Branch target '{reference}' is too far away (offset {offset_bytes}), must be in range [-2048, +2046] bytes");
             }
             let masked_offset = (offset_halfwords as u16) & 0x7FF; // first 11 bits
 
@@ -465,6 +565,7 @@ fn generate_branch(
 enum Patch {
     Raw(RawPatch),
     Branch(BranchPatch),
+    BranchWithLink(BranchWithLinkPatch),
     ThumbAddrPseudo(ThumbAddrPseudoPatch),
 }
 
@@ -475,6 +576,13 @@ struct RawPatch {
 
 #[derive(Debug)]
 struct BranchPatch {
+    offset: usize,
+    reference: String,
+    cond: Option<Condition>,
+}
+
+#[derive(Debug)]
+struct BranchWithLinkPatch {
     offset: usize,
     reference: String,
     cond: Option<Condition>,
