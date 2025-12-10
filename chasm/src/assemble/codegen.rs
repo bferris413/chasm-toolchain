@@ -415,14 +415,13 @@ fn generate_branch_with_link(
     patch_offset: Option<usize>,
 ) -> Result<()> {
     // Cortex-M4F PC is 4 bytes ahead of the branch instruction
-    let instr_pc = dbg!(patch_offset.as_ref()
-        .map_or_else(|| output.len() + 4, |offset| offset + 4));
+    let instr_pc = patch_offset.as_ref()
+        .map_or_else(|| output.len() + 4, |offset| offset + 4);
 
-    println!("Generating BL to '{reference}' at instr PC {:02X}", instr_pc);
-    let target_addr = match dbg!(labels.get(&reference[1..])) {
+    let target_addr = match labels.get(&reference[1..]) {
         Some(addr) => *addr,
         None => {
-            if dbg!(patch_offset.is_some()) {
+            if patch_offset.is_some() {
                 // we're expected to be patching - if the label isn't present now then it never will be
                 bail!("Undefined reference '{reference}'")
             }
@@ -442,11 +441,11 @@ fn generate_branch_with_link(
                 }
             }
 
-            dbg!(output.len() + 4)
+            output.len() + 4
         }
     };
 
-    let offset_bytes = dbg!(target_addr as isize - instr_pc as isize);
+    let offset_bytes = target_addr as isize - instr_pc as isize;
     if offset_bytes % 2 != 0 {
         bail!("Branch target address must be halfword-aligned, but label at '{reference}' is at byte address {target_addr:02X}");
     }
