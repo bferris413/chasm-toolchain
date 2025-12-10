@@ -966,8 +966,6 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        // 11110_S_XXXXXXXXXX_11_X_1_X_XXXXXXXXXXX
-        // b11110_0_0000000000_11_0_1_0_00000001100
         assert_eq!(machine_code.bytes, vec![
             0x00, 0xF0, 0x04, 0xF8,
             0x00, 0x00, 0x00, 0x00,
@@ -988,8 +986,6 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        // 11110_S_XXXXXXXXXX_11_X_1_X_XXXXXXXXXXX
-        // b11110_0_0000000000_11_0_1_0_00000001100
         assert_eq!(machine_code.bytes, vec![
             0x00, 0x00, 0x00, 0x00,
             0x11, 0x11, 0x11, 0x11,
