@@ -4,7 +4,7 @@
 #
 # We're using Stellaris LM3S6965 for strictly toolchain-related development
 # since QEMU supports the full board and it's very close to our real
-# hardware TM4C123GH6PM.
+# hardware (TI TM4C123GH6PM).
 
 if [ -z "$1" ]; then
     echo "Usage: $0 <path to firmware>"

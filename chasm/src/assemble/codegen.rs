@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 
-use crate::assemble::{AssemblyAst, Condition, HexLiteral, Instruction, MachineCode, NodeKind, PseudoInstruction};
+use crate::assemble::{AssemblyAst, Condition, HexLiteral, Instruction, MachineCode, NodeKind, PseudoInstruction, PushableRegister};
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
@@ -324,6 +324,35 @@ fn generate_instruction(
                 }
                 _ => unimplemented!("Only immediate 8-bit values are supported for ADDS"),
             };
+        }
+        // A7.7.101 PUSH
+        Instruction::Push { registers } => {
+            let is_t1_encoding = registers.iter().all(|reg| match reg {
+                PushableRegister::General(r) => *r as u8 <= 7,
+                PushableRegister::LR => true,
+            });
+
+            if is_t1_encoding {
+                // Encoding T1
+                let mut base_instr = 0b1011010_0_00000000u16;
+                let mut reg_list_bits = 0u16;
+
+                for reg in registers.iter() {
+                    let bit_pos = match reg {
+                        PushableRegister::General(r) => *r as u8,
+                        PushableRegister::LR => 8,
+                    };
+
+                    assert!(bit_pos <= 8);
+                    reg_list_bits |= 1 << bit_pos;
+                }
+
+                base_instr |= reg_list_bits;
+
+                output.extend(&base_instr.to_le_bytes());
+            } else {
+                todo!()
+            }
         }
         // A7.7.12 B
         Instruction::Branch { reference, cond } => {

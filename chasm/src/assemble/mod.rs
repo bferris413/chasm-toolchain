@@ -3,7 +3,7 @@ mod token;
 mod codegen;
 mod helpers;
 
-use std::{collections::HashMap, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}};
+use std::{collections::{HashMap, HashSet}, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}};
 
 use crate::{assemble::helpers::normalize_to_ascii_lower, AssembleArgs};
 use token::tokenize;
@@ -79,6 +79,7 @@ enum Instruction {
     Movt { dest: GeneralRegister, value: HexLiteral },
     Movw { dest: GeneralRegister, value: HexLiteral },
     Orrs { dest: GeneralRegister, src: GeneralRegister },
+    Push { registers: HashSet<PushableRegister> },
     Str { dest_addr_reg: GeneralRegister, src: GeneralRegister },
 }
 
@@ -172,7 +173,35 @@ impl TryFrom<Register> for BranchableRegister {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+enum PushableRegister {
+    General(GeneralRegister),
+    LR,
+}
+impl PushableRegister {
+    fn to_u8(&self) -> u8 {
+        match self {
+            PushableRegister::General(gen_reg) => *gen_reg as u8,
+            PushableRegister::LR => 14,
+        }
+    }
+}
+
+impl TryFrom<Register> for PushableRegister {
+    type Error = Error;
+    fn try_from(reg: Register) -> Result<Self, Self::Error> {
+        match reg {
+            Register::General(gen_reg) => Ok(PushableRegister::General(gen_reg)),
+            Register::LR => Ok(PushableRegister::LR),
+            Register::Special(r) => bail!("Special register '{r:?}' cannot be used in branch instructions"),
+            Register::SP | Register::PC => {
+                bail!("Register '{reg:?}' cannot be pushed onto the stack")
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[repr(u8)]
 enum GeneralRegister {
     R0,
@@ -239,6 +268,8 @@ enum TokenKind {
     Ref,
     LBracket,
     RBracket,
+    LCurly,
+    RCurly,
     LParen,
     RParen,
     Comma,
@@ -255,6 +286,8 @@ impl Display for TokenKind {
             TokenKind::Label => write!(f, "label"),
             TokenKind::LBracket => write!(f, "left bracket"),
             TokenKind::RBracket => write!(f, "right bracket"),
+            TokenKind::LCurly => write!(f, "left curly"),
+            TokenKind::RCurly => write!(f, "right curly"),
             TokenKind::LParen => write!(f, "left paren"),
             TokenKind::RParen => write!(f, "right paren"),
             TokenKind::Ref => write!(f, "reference"),
@@ -993,5 +1026,71 @@ mod tests {
             0x33, 0x33, 0x33, 0x33,
             0xFF, 0xF7, 0xF6, 0xFF,
         ]);
+    }
+
+    #[test]
+    fn push_with_r0_through_r7_gets_generated() {
+        let source = AssemblySource::from("PUSH {R0, R1, R2, R3, R4, R5, R6, R7, LR}".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b1011010_1_11111111
+        // b10110101_11111111
+        assert_eq!(machine_code.bytes, vec![0xFF, 0xB5]);
+    }
+
+    #[test]
+    fn push_with_duplicate_registers_errors() {
+        let source = AssemblySource::from("PUSH {R0, R6, R7, R0}".to_string());
+
+        let machine_code = assemble_source(&source);
+
+        assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
+        let err = machine_code.unwrap_err().to_string();
+        assert!(err.contains("Register 'R0' specified multiple times"), "{err}");
+    }
+
+    #[test]
+    fn push_with_no_registers_errors() {
+        let source = AssemblySource::from("PUSH {}".to_string());
+
+        let machine_code = assemble_source(&source);
+
+        assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
+        let err = machine_code.unwrap_err().to_string();
+        assert!(err.contains("Expected 'register' after 'PUSH'"), "{err}");
+    }
+
+    #[test]
+    fn push_with_unsupported_registers_in_list_errors() {
+        let source = AssemblySource::from("PUSH {r1, r2, SP}".to_string());
+
+        let machine_code = assemble_source(&source);
+
+        assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
+        let err = machine_code.unwrap_err().to_string();
+        assert!(err.contains("Invalid pushable register 'SP'"), "{err}");
+    }
+
+    #[test]
+    fn push_with_other_token_after_register_in_list_errors() {
+        let source = AssemblySource::from("PUSH {r1 LR}".to_string());
+
+        let machine_code = assemble_source(&source);
+
+        assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
+        let err = machine_code.unwrap_err().to_string();
+        assert!(err.contains("Expected ',' or '}' after register"), "{err}");
+    }
+
+    #[test]
+    fn push_with_nothing_after_register_in_list_errors() {
+        let source = AssemblySource::from("PUSH { LR".to_string());
+
+        let machine_code = assemble_source(&source);
+
+        assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
+        let err = machine_code.unwrap_err().to_string();
+        assert!(err.contains("found EOF"), "{err}");
     }
 }

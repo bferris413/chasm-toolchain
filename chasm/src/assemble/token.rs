@@ -51,6 +51,10 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 let bracket = tokenize_bracket(source, i, line, &mut col);
                 tokens.push(bracket);
             }
+            '{' | '}' => {
+                let curly = tokenize_curly(source, i, line, &mut col);
+                tokens.push(curly);
+            }
             c if c.is_ascii_alphabetic() => {
                 let identifier = tokenize_identifier(source, &mut chars, i, line, &mut col)?;
                 tokens.push(identifier);
@@ -81,6 +85,30 @@ fn skip_comment(
         let (_, _) = chars.next().unwrap();
         *col += 1;
     }
+}
+
+fn tokenize_curly<'src>(
+    source: &'src AssemblySource,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) ->Token<'src> {
+    let lexeme = &source[start_index..start_index + 1];
+    let kind = match &lexeme[..] {
+        "{" => TokenKind::LCurly,
+        "}" => TokenKind::RCurly,
+        _ => unreachable!(),
+    }; 
+    let t = Token {
+        kind,
+        lexeme,
+        line,
+        column: *col,
+        source,
+    };
+
+    *col += 1;
+    t
 }
 
 fn tokenize_bracket<'src>(

@@ -1,9 +1,11 @@
 //! Parser for chasm assembly source code.
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
-use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, HexLiteral, Instruction, Node, NodeKind, PseudoInstruction, Register, Token, TokenKind};
+use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, HexLiteral, Instruction, Node, NodeKind, PseudoInstruction, PushableRegister, Register, Token, TokenKind};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -139,19 +141,20 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
     let mut tmp_buf = [0u8; 8];
     let maybe_mnemonic = normalize_to_ascii_lower(token.lexeme, &mut tmp_buf);
     match maybe_mnemonic {
-        "ands" => parse_ands(token, tokens),
-        "ldr" => parse_ldr(token, tokens),
-        "movs" => parse_movs(token, tokens),
-        "movw" => parse_movw(token, tokens),
-        "movt" => parse_movt(token, tokens),
         "adds" => parse_adds(token, tokens),
-        "orrs" => parse_orrs(token, tokens),
-        "str" => parse_str(token, tokens),
+        "ands" => parse_ands(token, tokens),
         "b" => parse_branch(token, tokens),
+        "beq" => parse_branch_eq(token, tokens),
         "bl" => parse_branch_with_link(token, tokens),
         "bx" => parse_branch_exchange(token, tokens),
-        "beq" => parse_branch_eq(token, tokens),
         "eors" => parse_eors(token, tokens),
+        "ldr" => parse_ldr(token, tokens),
+        "movs" => parse_movs(token, tokens),
+        "movt" => parse_movt(token, tokens),
+        "movw" => parse_movw(token, tokens),
+        "orrs" => parse_orrs(token, tokens),
+        "push" => parse_push(token, tokens),
+        "str" => parse_str(token, tokens),
         other if Register::try_from(other).is_ok() => {
             let err = AssemblyError::new(
                 format!("Expected instruction mnemonic, found register '{}'", token.lexeme),
@@ -292,6 +295,22 @@ fn parse_branchable_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn It
     Ok((gen_reg, rt))
 }
 
+fn parse_pushable_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(PushableRegister, Token<'src>)> {
+    let (reg, rt) = parse_register(prev_token, tokens)?;
+    let gen_reg = PushableRegister::try_from(reg).map_err(|e| {
+        AssemblyError::new(
+            format!("Invalid pushable register '{}' after '{}': {e}", rt.lexeme, prev_token.lexeme),
+            rt.line,
+            rt.column,
+            Some(rt.column + rt.lexeme.len()),
+            rt.source,
+        )
+
+    })?;
+
+    Ok((gen_reg, rt))
+}
+
 fn parse_eors<'src>(eors_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
     let (dest_register, dt) = parse_register(&eors_token, tokens)?;
 
@@ -370,6 +389,85 @@ fn parse_ands<'src>(ands_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
     };
 
     Ok(node)
+}
+
+fn parse_push<'src>(push_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let _lcurly = next_symbol_token_as(TokenKind::LCurly, "{", &push_token, tokens)?;
+    let mut push_regs = HashSet::with_capacity(13);
+
+    loop {
+        let (push_reg, rt) = parse_pushable_register(&push_token, tokens)?;
+        if !push_regs.insert(push_reg) {
+            let err = AssemblyError::new(
+                format!("Register '{}' specified multiple times in push instruction", rt.lexeme),
+                rt.line,
+                rt.column,
+                Some(rt.column + rt.lexeme.len()),
+                rt.source,
+            );
+            return Err(err.into());
+        }
+
+        let maybe_next = tokens.next();
+        match maybe_next {
+            Some(next_token) if next_token.kind == TokenKind::Comma => {
+                // continue parsing registers
+            }
+            Some(next_token) if next_token.kind == TokenKind::RCurly => {
+                // end of push register list
+                break;
+            }
+            Some(next_token) => {
+                let err = AssemblyError::new(
+                    format!("Expected ',' or '}}' after register '{}', found '{}'", rt.lexeme, next_token.lexeme),
+                    next_token.line,
+                    next_token.column,
+                    Some(next_token.column + next_token.lexeme.len()),
+                    next_token.source,
+                );
+                return Err(err.into());
+            }
+            None => {
+                let err = AssemblyError::new(
+                    format!("Expected ',' or '}}' after register '{}', found EOF", rt.lexeme),
+                    rt.line,
+                    rt.column,
+                    Some(rt.column + rt.lexeme.len()),
+                    rt.source,
+                );
+                return Err(err.into());
+            }
+        }
+    }
+
+    if push_regs.is_empty() {
+        let err = AssemblyError::new(
+            format!("Push instruction requires at least one register to push"),
+            push_token.line,
+            push_token.column,
+            Some(push_token.column + push_token.lexeme.len()),
+            push_token.source,
+        );
+        return Err(err.into());
+    }
+
+    if push_regs.len() > 14 { // r0..=r12 + lr
+        let err = AssemblyError::new(
+            format!("Push instruction cannot push more than 14 registers, found {}", push_regs.len()),
+            push_token.line,
+            push_token.column,
+            Some(push_token.column + push_token.lexeme.len()),
+            push_token.source,
+        );
+        return Err(err.into());
+    }
+
+    let push_node = Node {
+        kind: NodeKind::Instruction(Instruction::Push { registers: push_regs }),
+        token: push_token,
+    };
+
+    Ok(push_node)
 }
 
 fn parse_str<'src>(str_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
