@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 
-use crate::assemble::{AssemblyAst, Condition, HexLiteral, Instruction, MachineCode, NodeKind, PseudoInstruction, PushableRegister};
+use crate::assemble::{AssemblyAst, Condition, HexLiteral, Instruction, MachineCode, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister};
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
@@ -341,6 +341,38 @@ fn generate_instruction(
                     let bit_pos = match reg {
                         PushableRegister::General(r) => *r as u8,
                         PushableRegister::LR => 8,
+                    };
+
+                    assert!(bit_pos <= 8);
+                    reg_list_bits |= 1 << bit_pos;
+                }
+
+                base_instr |= reg_list_bits;
+
+                output.extend(&base_instr.to_le_bytes());
+            } else {
+                todo!()
+            }
+        }
+        // A7.7.99 POP
+        Instruction::Pop { registers } => {
+            use PoppableRegister::*;
+            let is_t1_encoding = registers.iter().all(|reg| match reg {
+                General(r) => *r as u8 <= 7,
+                PC  => true,
+                LR => false,
+            });
+
+            if is_t1_encoding {
+                // Encoding T1
+                let mut base_instr = 0b1011110_0_00000000u16;
+                let mut reg_list_bits = 0u16;
+
+                for reg in registers.iter() {
+                    let bit_pos = match reg {
+                        General(r) => *r as u8,
+                        PC => 8,
+                        LR => unreachable!("LR cannot be popped in T1 encoding"),
                     };
 
                     assert!(bit_pos <= 8);

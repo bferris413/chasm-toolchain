@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
-use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, HexLiteral, Instruction, Node, NodeKind, PseudoInstruction, PushableRegister, Register, Token, TokenKind};
+use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, HexLiteral, Instruction, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, Register, Token, TokenKind};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -153,6 +153,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = 
         "movt" => parse_movt(token, tokens),
         "movw" => parse_movw(token, tokens),
         "orrs" => parse_orrs(token, tokens),
+        "pop" => parse_pop(token, tokens),
         "push" => parse_push(token, tokens),
         "str" => parse_str(token, tokens),
         other if Register::try_from(other).is_ok() => {
@@ -295,6 +296,22 @@ fn parse_branchable_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn It
     Ok((gen_reg, rt))
 }
 
+fn parse_poppable_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(PoppableRegister, Token<'src>)> {
+    let (reg, rt) = parse_register(prev_token, tokens)?;
+    let gen_reg = PoppableRegister::try_from(reg).map_err(|e| {
+        AssemblyError::new(
+            format!("Invalid poppable register '{}' after '{}': {e}", rt.lexeme, prev_token.lexeme),
+            rt.line,
+            rt.column,
+            Some(rt.column + rt.lexeme.len()),
+            rt.source,
+        )
+
+    })?;
+
+    Ok((gen_reg, rt))
+}
+
 fn parse_pushable_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(PushableRegister, Token<'src>)> {
     let (reg, rt) = parse_register(prev_token, tokens)?;
     let gen_reg = PushableRegister::try_from(reg).map_err(|e| {
@@ -389,6 +406,85 @@ fn parse_ands<'src>(ands_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
     };
 
     Ok(node)
+}
+
+fn parse_pop<'src>(pop_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let _lcurly = next_symbol_token_as(TokenKind::LCurly, "{", &pop_token, tokens)?;
+    let mut pop_regs = HashSet::with_capacity(13);
+
+    loop {
+        let (pop_reg, rt) = parse_poppable_register(&pop_token, tokens)?;
+        if !pop_regs.insert(pop_reg) {
+            let err = AssemblyError::new(
+                format!("Register '{}' specified multiple times in pop instruction", rt.lexeme),
+                rt.line,
+                rt.column,
+                Some(rt.column + rt.lexeme.len()),
+                rt.source,
+            );
+            return Err(err.into());
+        }
+
+        let maybe_next = tokens.next();
+        match maybe_next {
+            Some(next_token) if next_token.kind == TokenKind::Comma => {
+                // continue parsing registers
+            }
+            Some(next_token) if next_token.kind == TokenKind::RCurly => {
+                // end of push register list
+                break;
+            }
+            Some(next_token) => {
+                let err = AssemblyError::new(
+                    format!("Expected ',' or '}}' after register '{}', found '{}'", rt.lexeme, next_token.lexeme),
+                    next_token.line,
+                    next_token.column,
+                    Some(next_token.column + next_token.lexeme.len()),
+                    next_token.source,
+                );
+                return Err(err.into());
+            }
+            None => {
+                let err = AssemblyError::new(
+                    format!("Expected ',' or '}}' after register '{}', found EOF", rt.lexeme),
+                    rt.line,
+                    rt.column,
+                    Some(rt.column + rt.lexeme.len()),
+                    rt.source,
+                );
+                return Err(err.into());
+            }
+        }
+    }
+
+    if pop_regs.is_empty() {
+        let err = AssemblyError::new(
+            format!("Pop instruction requires at least one register to pop"),
+            pop_token.line,
+            pop_token.column,
+            Some(pop_token.column + pop_token.lexeme.len()),
+            pop_token.source,
+        );
+        return Err(err.into());
+    }
+
+    if pop_regs.len() > 15 { // r0..=r12 + lr + pc
+        let err = AssemblyError::new(
+            format!("Pop instruction cannot pop more than 15 registers, found {}", pop_regs.len()),
+            pop_token.line,
+            pop_token.column,
+            Some(pop_token.column + pop_token.lexeme.len()),
+            pop_token.source,
+        );
+        return Err(err.into());
+    }
+
+    let pop_node = Node {
+        kind: NodeKind::Instruction(Instruction::Pop { registers: pop_regs }),
+        token: pop_token,
+    };
+
+    Ok(pop_node)
 }
 
 fn parse_push<'src>(push_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {

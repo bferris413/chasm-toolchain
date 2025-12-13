@@ -79,6 +79,7 @@ enum Instruction {
     Movt { dest: GeneralRegister, value: HexLiteral },
     Movw { dest: GeneralRegister, value: HexLiteral },
     Orrs { dest: GeneralRegister, src: GeneralRegister },
+    Pop { registers: HashSet<PoppableRegister> },
     Push { registers: HashSet<PushableRegister> },
     Str { dest_addr_reg: GeneralRegister, src: GeneralRegister },
 }
@@ -169,6 +170,37 @@ impl TryFrom<Register> for BranchableRegister {
             Register::LR => Ok(BranchableRegister::LR),
             Register::PC => Ok(BranchableRegister::PC),
             Register::Special(r) => bail!("Special register '{r:?}' cannot be used in branch instructions"),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+enum PoppableRegister {
+    General(GeneralRegister),
+    LR,
+    PC,
+}
+impl PoppableRegister {
+    fn to_u8(&self) -> u8 {
+        match self {
+            PoppableRegister::General(gen_reg) => *gen_reg as u8,
+            PoppableRegister::LR => 14,
+            PoppableRegister::PC => 14,
+        }
+    }
+}
+
+impl TryFrom<Register> for PoppableRegister {
+    type Error = Error;
+    fn try_from(reg: Register) -> Result<Self, Self::Error> {
+        match reg {
+            Register::General(gen_reg) => Ok(PoppableRegister::General(gen_reg)),
+            Register::LR => Ok(PoppableRegister::LR),
+            Register::PC => Ok(PoppableRegister::PC),
+            Register::Special(r) => bail!("Special register '{r:?}' cannot be used in branch instructions"),
+            Register::SP => {
+                bail!("Register '{reg:?}' cannot be popped from the stack")
+            }
         }
     }
 }
@@ -1029,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn push_with_r0_through_r7_gets_generated() {
+    fn push_with_r0_through_r7_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("PUSH {R0, R1, R2, R3, R4, R5, R6, R7, LR}".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
@@ -1092,5 +1124,16 @@ mod tests {
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err().to_string();
         assert!(err.contains("found EOF"), "{err}");
+    }
+
+    #[test]
+    fn pop_with_registers_and_pc_gets_generated_as_t1_encoding() {
+        let source = AssemblySource::from("POP {R1, R2, R4, R5, R6, R7, PC}".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        // b1011110_1_11110110
+        // b10111101_11110110
+        assert_eq!(machine_code.bytes, vec![0xF6, 0xBD]);
     }
 }
