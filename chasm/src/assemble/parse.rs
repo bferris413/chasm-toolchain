@@ -468,9 +468,20 @@ fn parse_pop<'src>(pop_token: Token<'src>, tokens: &mut dyn Iterator<Item = Toke
         return Err(err.into());
     }
 
-    if pop_regs.len() > 15 { // r0..=r12 + lr + pc
+    if pop_regs.len() > 14 { // r0..=r12 + lr/pc
         let err = AssemblyError::new(
-            format!("Pop instruction cannot pop more than 15 registers, found {}", pop_regs.len()),
+            format!("Pop instruction cannot pop more than 14 registers, found {}", pop_regs.len()),
+            pop_token.line,
+            pop_token.column,
+            Some(pop_token.column + pop_token.lexeme.len()),
+            pop_token.source,
+        );
+        return Err(err.into());
+    }
+
+    if pop_regs.contains(&PoppableRegister::LR) && pop_regs.contains(&PoppableRegister::PC) {
+        let err = AssemblyError::new(
+            format!("Pop instruction cannot pop both LR and PC registers"),
             pop_token.line,
             pop_token.column,
             Some(pop_token.column + pop_token.lexeme.len()),

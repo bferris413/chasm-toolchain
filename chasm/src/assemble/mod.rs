@@ -1136,4 +1136,31 @@ mod tests {
         // b10111101_11110110
         assert_eq!(machine_code.bytes, vec![0xF6, 0xBD]);
     }
+
+    #[test]
+    fn pop_with_missing_command_returns_err() {
+        let source = AssemblySource::from("POP {R1 PC}".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected ',' or '}'"), "Err: {}", err);
+    }
+
+    #[test]
+    fn pop_with_empty_register_set_returns_error() {
+        let source = AssemblySource::from("POP {}".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected 'register' after 'POP'"), "Err: {}", err);
+    }
+
+    #[test]
+    fn pop_with_lr_and_pc_returns_error() {
+        let source = AssemblySource::from("POP {R1, LR, R0, PC}".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("cannot pop both LR and PC"), "Err: {}", err);
+    }
 }
