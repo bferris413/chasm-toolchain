@@ -14,18 +14,19 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
     let mut code_bytes = Vec::new();
     let mut labels = HashMap::new();
     let mut unresolved_refs = HashMap::new();
+    let mut definitions = HashMap::new();
 
     // generate valid code and collect forward refs
-    for node in ast.nodes.iter() {
-        match &node.kind {
+    for node in ast.nodes.into_iter() {
+        match node.kind {
             NodeKind::HexLiteral(lit) => {
-                generate_hex_literal(lit, &mut code_bytes);
+                generate_hex_literal(&lit, &mut code_bytes);
             }
             NodeKind::Instruction(instr) => {
                 generate_instruction(&instr, &mut code_bytes, &labels, &mut unresolved_refs)?;
             }
             NodeKind::PseudoInstruction(instr) => {
-                generate_pseudo_instruction(&instr, &mut code_bytes, &labels, &mut unresolved_refs)?;
+                generate_pseudo_instruction(instr, &mut code_bytes, &labels, &mut unresolved_refs, &mut definitions)?;
             }
             NodeKind::Label => {
                 let label = &node.token.lexeme[1..]; // strip '@'
@@ -119,7 +120,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
         }
     }
 
-    Ok(MachineCode { bytes: code_bytes, labels })
+    Ok(MachineCode { bytes: code_bytes, labels, definitions })
 }
 
 fn generate_hex_literal(lit: &HexLiteral, output: &mut Vec<u8>) {
@@ -135,19 +136,23 @@ fn generate_ref(addr: u32, output: &mut Vec<u8>) {
 }
 #[allow(clippy::unusual_byte_groupings)]
 fn generate_pseudo_instruction(
-    pseudo: &PseudoInstruction,
+    pseudo: PseudoInstruction,
     output: &mut Vec<u8>,
     labels: &HashMap<String, usize>,
     unresolved_refs: &mut HashMap<String, Vec<Patch>>,
+    definitions: &mut HashMap<String, HexLiteral>,
 ) -> Result<()> {
     match pseudo {
         PseudoInstruction::ThumbAddr { reference } => {
             let not_as_patch = None;
-            generate_thumb_addr_pseudo(reference, output, labels, unresolved_refs, not_as_patch)?;
+            generate_thumb_addr_pseudo(&reference, output, labels, unresolved_refs, not_as_patch)?;
         }
         PseudoInstruction::PadWithTo { pad_with, pad_to } => {
             let not_as_patch = None;
-            generate_pad_with_to(*pad_with, *pad_to, output, labels, unresolved_refs, not_as_patch)?;
+            generate_pad_with_to(pad_with, pad_to, output, labels, unresolved_refs, not_as_patch)?;
+        }
+        PseudoInstruction::Define { identifier, hex_literal } => {
+            generate_define(identifier, hex_literal, definitions)?;
         }
     }
 
@@ -406,6 +411,19 @@ fn generate_instruction(
         }
     }
 
+    Ok(())
+}
+
+fn generate_define(
+    identifier: String,
+    hex_literal: HexLiteral,
+    definitions: &mut HashMap<String, HexLiteral>,
+) -> Result<()> {
+    if definitions.contains_key(&identifier) {
+        bail!("Duplicate definition for '{identifier}'");
+    }
+
+    definitions.insert(identifier.to_string(), hex_literal);
     Ok(())
 }
 

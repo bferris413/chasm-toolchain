@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
-use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, HexLiteral, Instruction, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, Register, Token, TokenKind};
+use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, HexLiteral, Instruction, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, Register, Token, TokenKind, token};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -62,11 +62,22 @@ fn parse_dereference<'src>(
     prev_token: Token<'src>,
     tokens: &mut dyn Iterator<Item = Token<'src>>
 ) -> Result<(Register, Token<'src>)> {
-    let lbracket = next_symbol_token_as(TokenKind::LBracket, "[", &prev_token, tokens)?;
+    let lbracket = next_symbol_token_as(&[TokenKind::LBracket], "[", &prev_token, tokens)?;
     let (reg, rt) = parse_register(&lbracket, tokens)?;
-    let _rbracket = next_symbol_token_as(TokenKind::RBracket, "]", &rt, tokens)?;
+    let _rbracket = next_symbol_token_as(&[TokenKind::RBracket], "]", &rt, tokens)?;
 
     Ok((reg, rt))
+}
+
+fn parse_hex_literal<'src>(prev_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let hex_literal_token = next_symbol_token_as(&[TokenKind::HexLiteralU8, TokenKind::HexLiteralU16, TokenKind::HexLiteralU32], "hex literal", &prev_token, tokens)?;
+
+    match hex_literal_token.kind {
+        TokenKind::HexLiteralU8 => Ok(parse_hex_literal_u8(hex_literal_token)),
+        TokenKind::HexLiteralU16 => Ok(parse_hex_literal_u16(hex_literal_token)),
+        TokenKind::HexLiteralU32 => Ok(parse_hex_literal_u32(hex_literal_token)),
+        _ => unreachable!(),
+    }    
 }
 
 fn parse_hex_literal_u32(token: Token<'_>) -> Node<'_> {
@@ -186,6 +197,7 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
     match token.lexeme {
         "thumb-addr!" => parse_thumb_addr_pseudo(token, tokens),
         "pad-with-to!" => parse_pad_with_to_pseudo(token, tokens),
+        "define!" => parse_define_pseudo(token, tokens),
         other => {
             let err = AssemblyError::new(
                 format!("Found unknown pseudo-instruction '{}'", token.lexeme),
@@ -200,7 +212,7 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
 }
 
 fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let lparen = next_symbol_token_as(TokenKind::LParen, "(", &pad_with_to_token, tokens)?;
+    let lparen = next_symbol_token_as(&[TokenKind::LParen], "(", &pad_with_to_token, tokens)?;
 
     let maybe_byte_literal = tokens.next().ok_or_else(|| {
         AssemblyError::new(
@@ -218,7 +230,7 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
         _ => unreachable!(),
     };
 
-    let comma = next_symbol_token_as(TokenKind::Comma, ",", &pad_with_u8.token, tokens)?;
+    let comma = next_symbol_token_as(&[TokenKind::Comma], ",", &pad_with_u8.token, tokens)?;
     let maybe_4_byte_literal = tokens.next().ok_or_else(|| {
         AssemblyError::new(
             format!("Expected 8-bit hex literal after '{}', found EOF", comma.lexeme),
@@ -235,7 +247,7 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
         _ => unreachable!(),
     };
 
-    let _rparen = next_symbol_token_as(TokenKind::RParen, ")", &pad_to_u32.token, tokens)?;
+    let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &pad_to_u32.token, tokens)?;
 
     let node = Node {
         kind: NodeKind::PseudoInstruction(PseudoInstruction::PadWithTo { pad_with, pad_to }),
@@ -246,9 +258,9 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
 }
 
 fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let lparen = next_symbol_token_as(TokenKind::LParen, "(", &thumb_addr_token, tokens)?;
-    let reference = next_symbol_token_as(TokenKind::Ref, "&reference", &lparen, tokens)?;
-    let _rparen = next_symbol_token_as(TokenKind::RParen, ")", &reference, tokens)?;
+    let lparen = next_symbol_token_as(&[TokenKind::LParen], "(", &thumb_addr_token, tokens)?;
+    let reference = next_symbol_token_as(&[TokenKind::Ref], "&reference", &lparen, tokens)?;
+    let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &reference, tokens)?;
 
     let node = Node {
         kind: NodeKind::PseudoInstruction(PseudoInstruction::ThumbAddr { reference: reference.lexeme.to_string() }),
@@ -258,15 +270,31 @@ fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn
     Ok(node)
 }
 
+fn parse_define_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let lparen = next_symbol_token_as(&[TokenKind::LParen], "(", &define_token, tokens)?;
+    let identifier = next_symbol_token_as(&[TokenKind::Identifier], "identifier", &lparen, tokens)?;
+    let comma = next_symbol_token_as(&[TokenKind::Comma], ",", &identifier, tokens)?;
+    let hex_literal = parse_hex_literal(comma, tokens)?;
+    let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &hex_literal.token, tokens)?;
+
+    let NodeKind::HexLiteral(hx) = hex_literal.kind else { unreachable!() };
+    let node = Node {
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::Define { identifier: identifier.lexeme.to_string(), hex_literal: hx }),
+        token: define_token,
+    };
+
+    Ok(node)
+}
+
 fn parse_imm16<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let imm16 = next_symbol_token_as(TokenKind::HexLiteralU16, "u16 hex literal", prev_token, tokens)?;
+    let imm16 = next_symbol_token_as(&[TokenKind::HexLiteralU16], "u16 hex literal", prev_token, tokens)?;
     let imm16_node = parse_hex_literal_u16(imm16);
 
     Ok(imm16_node)
 }
 
 fn parse_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(Register, Token<'src>)> {
-    let maybe_register = next_symbol_token_as(TokenKind::Identifier, "register", prev_token, tokens)?;
+    let maybe_register = next_symbol_token_as(&[TokenKind::Identifier], "register", prev_token, tokens)?;
     let register = Register::try_from(maybe_register.lexeme).map_err(|e| {
         AssemblyError::new(
             format!("Invalid register '{}' after '{}': {e}", maybe_register.lexeme, prev_token.lexeme),
@@ -409,7 +437,7 @@ fn parse_ands<'src>(ands_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_pop<'src>(pop_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let _lcurly = next_symbol_token_as(TokenKind::LCurly, "{", &pop_token, tokens)?;
+    let _lcurly = next_symbol_token_as(&[TokenKind::LCurly], "{", &pop_token, tokens)?;
     let mut pop_regs = HashSet::with_capacity(13);
 
     loop {
@@ -499,7 +527,7 @@ fn parse_pop<'src>(pop_token: Token<'src>, tokens: &mut dyn Iterator<Item = Toke
 }
 
 fn parse_push<'src>(push_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let _lcurly = next_symbol_token_as(TokenKind::LCurly, "{", &push_token, tokens)?;
+    let _lcurly = next_symbol_token_as(&[TokenKind::LCurly], "{", &push_token, tokens)?;
     let mut push_regs = HashSet::with_capacity(13);
 
     loop {
@@ -767,7 +795,7 @@ fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
         }
     };
 
-    let hex_u8 = next_symbol_token_as(TokenKind::HexLiteralU8, "8-bit hex literal", &dt, tokens)?;
+    let hex_u8 = next_symbol_token_as(&[TokenKind::HexLiteralU8], "8-bit hex literal", &dt, tokens)?;
     let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(hex_u8).kind else { unreachable!() };
 
     let node = Node {
@@ -795,7 +823,7 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
         }
     };
 
-    let hex_u8 = next_symbol_token_as(TokenKind::HexLiteralU8, "8-bit hex literal", &dt, tokens)?;
+    let hex_u8 = next_symbol_token_as(&[TokenKind::HexLiteralU8], "8-bit hex literal", &dt, tokens)?;
     let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(hex_u8).kind else { unreachable!() };
 
     let node = Node {
@@ -807,7 +835,7 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let reference = next_symbol_token_as(TokenKind::Ref, "&reference", &branch_token, tokens)?;
+    let reference = next_symbol_token_as(&[TokenKind::Ref], "&reference", &branch_token, tokens)?;
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Branch { reference: reference.lexeme.to_string(), cond: None }),
         token: branch_token,
@@ -817,7 +845,7 @@ fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item 
 }
 
 fn parse_branch_with_link<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let reference = next_symbol_token_as(TokenKind::Ref, "&reference", &branch_token, tokens)?;
+    let reference = next_symbol_token_as(&[TokenKind::Ref], "&reference", &branch_token, tokens)?;
     let node = Node {
         kind: NodeKind::Instruction(Instruction::BranchWithLink { reference: reference.lexeme.to_string(), cond: None }),
         token: branch_token,
@@ -847,7 +875,7 @@ fn parse_branch_eq<'src>(branch_eq_token: Token<'src>, tokens: &mut dyn Iterator
 }
 
 fn next_symbol_token_as<'src>(
-    kind: TokenKind,
+    kinds: &[TokenKind],
     sym: &str,
     prev_token: &Token<'src>,
     tokens: &mut dyn Iterator<Item = Token<'src>>
@@ -863,7 +891,7 @@ fn next_symbol_token_as<'src>(
         return Err(err.into());
     };
 
-    if kind != maybe_kind.kind {
+    if !kinds.contains(&maybe_kind.kind) {
         let err = AssemblyError::new(
             format!("Expected '{sym}' after '{}', found '{}'", prev_token.lexeme, maybe_kind.lexeme),
             maybe_kind.line,

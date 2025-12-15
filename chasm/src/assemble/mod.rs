@@ -86,8 +86,9 @@ enum Instruction {
 
 #[derive(Debug)]
 enum PseudoInstruction {
-    ThumbAddr { reference: String,  },
-    PadWithTo { pad_with: u8, pad_to: u32  },
+    ThumbAddr { reference: String },
+    PadWithTo { pad_with: u8, pad_to: u32 },
+    Define    { identifier: String, hex_literal: HexLiteral },
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -96,7 +97,7 @@ enum Condition {
     Eq = 0b0000,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum HexLiteral {
     U32(u32),
     U16(u16),
@@ -279,6 +280,7 @@ impl<'src> DerefMut for AssemblyTokens<'src> {
 struct MachineCode {
     bytes: Vec<u8>,
     labels: HashMap<String, usize>,
+    definitions: HashMap<String, HexLiteral>,
 }
 
 #[derive(Debug)]
@@ -1162,5 +1164,42 @@ mod tests {
         let err = assemble_source(&source).unwrap_err();
 
         assert!(err.to_string().contains("cannot pop both LR and PC"), "Err: {}", err);
+    }
+
+    #[test]
+    fn define_stores_hex_literal_with_identifier() {
+        let source = AssemblySource::from("define!(GPIO-F, x1111.2222)".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        let hex_lit = machine_code.definitions.get("GPIO-F").unwrap();
+        assert_eq!(*hex_lit, HexLiteral::U32(0x11112222));
+    }
+
+    #[test]
+    fn define_without_identifier_fails() {
+        let source = AssemblySource::from("define!(x1000, x1111.2222)".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected 'identifier' after '('"), "Err: {}", err);
+    }
+
+    #[test]
+    fn define_without_comma_fails() {
+        let source = AssemblySource::from("define!(BASE-LENGTH x1111.2222)".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected ',' after 'BASE-LENGTH'"), "Err: {}", err);
+    }
+
+    #[test]
+    fn empty_define_fails() {
+        let source = AssemblySource::from("define!()".to_string());
+
+        let err = assemble_source(&source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected 'identifier' after '('"), "Err: {}", err);
     }
 }
