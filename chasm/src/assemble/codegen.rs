@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 
-use crate::assemble::{AssemblyAst, Condition, HexLiteral, Instruction, MachineCode, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister};
+use crate::assemble::{AssemblyAst, Condition, GeneralRegister, HexLiteral, Instruction, MachineCode, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister};
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
@@ -37,7 +37,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
 
                 labels.insert(label.to_string(), code_bytes.len());
             }
-            NodeKind::Ref => {
+            NodeKind::LabelRef => {
                 let reference = &node.token.lexeme[1..]; // strip '&'
                 match labels.get(reference) {
                     Some(&addr) => generate_ref(addr as u32, &mut code_bytes),
@@ -51,6 +51,15 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
                         }
 
                         generate_ref(REF_PLACEHOLDER, &mut code_bytes);
+                    }
+                }
+            }
+            NodeKind::DefinedRef => {
+                let reference = &node.token.lexeme[1..]; // strip '$'
+                match definitions.get(reference) {
+                    Some(&hex_lit) => generate_hex_literal(&hex_lit, &mut code_bytes),
+                    None => {
+                        bail!("Undefined definition '{reference}'");
                     }
                 }
             }
@@ -153,6 +162,9 @@ fn generate_pseudo_instruction(
         }
         PseudoInstruction::Define { identifier, hex_literal } => {
             generate_define(identifier, hex_literal, definitions)?;
+        }
+        PseudoInstruction::Mov { reg, hex_literal } => {
+            generate_mov(reg, hex_literal, output)?;
         }
     }
 
@@ -412,6 +424,48 @@ fn generate_instruction(
     }
 
     Ok(())
+}
+
+fn generate_mov(
+    reg: GeneralRegister,
+    hex_literal: HexLiteral,
+    output: &mut Vec<u8>,
+) -> Result<()> {
+    match hex_literal {
+        HexLiteral::U32(value) => {
+            let imm16_low = (value & 0xFFFF) as u16;
+            let imm16_high = ((value >> 16) & 0xFFFF) as u16;
+
+            let movw_instr = Instruction::Movw {
+                dest: reg,
+                value: HexLiteral::U16(imm16_low),
+            };
+            let movt_instr = Instruction::Movt {
+                dest: reg,
+                value: HexLiteral::U16(imm16_high),
+            };
+
+            generate_instruction(&movw_instr, output, &HashMap::new(), &mut HashMap::new())?;
+            generate_instruction(&movt_instr, output, &HashMap::new(), &mut HashMap::new())
+        }
+        v @ HexLiteral::U16(..) => {
+            let movw_instr = Instruction::Movw {
+                dest: reg,
+                value: v,
+            };
+
+            generate_instruction(&movw_instr, output, &HashMap::new(), &mut HashMap::new())
+        },
+        v @ HexLiteral::U8(..) => {
+            let movs_instr = Instruction::Movs {
+                dest: reg,
+                value: v,
+            };
+
+            generate_instruction(&movs_instr, output, &HashMap::new(), &mut HashMap::new())
+        },
+    }
+
 }
 
 fn generate_define(

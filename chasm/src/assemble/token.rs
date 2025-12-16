@@ -38,8 +38,8 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 let label_token = tokenize_label(source, &mut chars, i, line, &mut col)?;
                 tokens.push(label_token);
             }
-            '&' => {
-                // reference
+            '&' | '$' => {
+                // label reference
                 let ref_token = tokenize_ref(source, &mut chars, i, line, &mut col)?;
                 tokens.push(ref_token);
             }
@@ -236,7 +236,7 @@ fn tokenize_ref<'src>(
     let lexeme = &source[start_index..cur_index];
     if lexeme.len() < 2 {
         let err = AssemblyError::new(
-            "Reference must have at least one character after '&'".to_string(),
+            "Reference must have at least one character".to_string(),
             line,
             start_col,
             Some(*col),
@@ -245,8 +245,16 @@ fn tokenize_ref<'src>(
         return Err(err.into());
     }
 
+    let ref_char = &lexeme[0..1];
+    let kind = if ref_char == "&" {
+        TokenKind::LabelRef
+    } else {
+        assert!(ref_char == "$");
+        TokenKind::DefinedRef
+    };
+
     let t = Token {
-        kind: TokenKind::Ref,
+        kind,
         lexeme,
         line,
         column: start_col,

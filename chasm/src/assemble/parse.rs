@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
-use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, HexLiteral, Instruction, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, Register, Token, TokenKind, token};
+use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, GeneralRegister, HexLiteral, Instruction, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, Register, Token, TokenKind, token};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -38,8 +38,12 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
                 let node = parse_label(token)?;
                 nodes.push(node);
             }
-            TokenKind::Ref => {
-                let node = parse_ref(token)?;
+            TokenKind::LabelRef => {
+                let node = parse_label_ref(token)?;
+                nodes.push(node);
+            }
+            TokenKind::DefinedRef => {
+                let node = parse_defined_ref(token)?;
                 nodes.push(node);
             }
             other => {
@@ -122,12 +126,24 @@ fn parse_hex_literal_u8(token: Token<'_>) -> Node<'_> {
     node
 }
 
-fn parse_ref<'src>(ref_token: Token<'src>) -> Result<Node<'src>> {
+fn parse_defined_ref<'src>(ref_token: Token<'src>) -> Result<Node<'src>> {
+    assert!(ref_token.lexeme.starts_with('$'));
+    assert!(ref_token.lexeme.len() > 1);
+
+    let node = Node {
+        kind: NodeKind::DefinedRef,
+        token: ref_token,
+    };
+
+    Ok(node)
+}
+
+fn parse_label_ref<'src>(ref_token: Token<'src>) -> Result<Node<'src>> {
     assert!(ref_token.lexeme.starts_with('&'));
     assert!(ref_token.lexeme.len() > 1);
 
     let node = Node {
-        kind: NodeKind::Ref,
+        kind: NodeKind::LabelRef,
         token: ref_token,
     };
 
@@ -198,6 +214,7 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
         "thumb-addr!" => parse_thumb_addr_pseudo(token, tokens),
         "pad-with-to!" => parse_pad_with_to_pseudo(token, tokens),
         "define!" => parse_define_pseudo(token, tokens),
+        "mov!" => parse_mov_pseudo(token, tokens),
         other => {
             let err = AssemblyError::new(
                 format!("Found unknown pseudo-instruction '{}'", token.lexeme),
@@ -259,7 +276,7 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
 
 fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
     let lparen = next_symbol_token_as(&[TokenKind::LParen], "(", &thumb_addr_token, tokens)?;
-    let reference = next_symbol_token_as(&[TokenKind::Ref], "&reference", &lparen, tokens)?;
+    let reference = next_symbol_token_as(&[TokenKind::LabelRef], "&reference", &lparen, tokens)?;
     let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &reference, tokens)?;
 
     let node = Node {
@@ -286,6 +303,22 @@ fn parse_define_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterato
     Ok(node)
 }
 
+fn parse_mov_pseudo<'src>(mov_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let lparen = next_symbol_token_as(&[TokenKind::LParen], "(", &mov_token, tokens)?;
+    let (dest_reg, dt) = parse_general_register(&lparen, tokens)?;
+    let comma = next_symbol_token_as(&[TokenKind::Comma], ",", &dt, tokens)?;
+    let hex_literal = parse_hex_literal(comma, tokens)?;
+    let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &hex_literal.token, tokens)?;
+
+    let NodeKind::HexLiteral(hx) = hex_literal.kind else { unreachable!() };
+    let node = Node {
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::Mov { reg: dest_reg, hex_literal: hx }),
+        token: mov_token,
+    };
+
+    Ok(node)
+}
+
 fn parse_imm16<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
     let imm16 = next_symbol_token_as(&[TokenKind::HexLiteralU16], "u16 hex literal", prev_token, tokens)?;
     let imm16_node = parse_hex_literal_u16(imm16);
@@ -307,6 +340,42 @@ fn parse_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item
 
     Ok((register, maybe_register))
 }
+
+fn parse_general_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(GeneralRegister, Token<'src>)> {
+    let (reg, rt) = parse_register(prev_token, tokens)?;
+    let gen_reg = match reg {
+        Register::General(gen_reg) => gen_reg,
+        _ => {
+            let err = AssemblyError::new(
+                format!("Expected general-purpose register after '{}', found '{:?}'", prev_token.lexeme, reg),
+                rt.line,
+                rt.column,
+                Some(rt.column + rt.lexeme.len()),
+                rt.source,
+            );
+            return Err(err.into());
+        }
+    };
+
+    Ok((gen_reg, rt))
+}
+
+fn parse_general_register_low<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(GeneralRegister, Token<'src>)> {
+    let (gen_reg, rt) = parse_general_register(prev_token, tokens)?;
+    if (gen_reg as u8) < 8 {
+        Ok((gen_reg, rt))
+    } else {
+        let err = AssemblyError::new(
+            format!("Expected general-purpose register (r0-r7), found '{:?}'", gen_reg),
+            rt.line,
+            rt.column,
+            Some(rt.column + rt.lexeme.len()),
+            rt.source,
+        );
+        Err(err.into())
+    }
+}
+
 
 fn parse_branchable_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(BranchableRegister, Token<'src>)> {
     let (reg, rt) = parse_register(prev_token, tokens)?;
@@ -357,36 +426,9 @@ fn parse_pushable_register<'src>(prev_token: &Token<'src>, tokens: &mut dyn Iter
 }
 
 fn parse_eors<'src>(eors_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let (dest_register, dt) = parse_register(&eors_token, tokens)?;
+    let (dest_register, dt) = parse_general_register_low(&eors_token, tokens)?;
 
-    let dest_register = match dest_register {
-        Register::General(reg) if (reg as u8) < 8 => reg,
-        _ => {
-            let err = AssemblyError::new(
-                format!("Expected general-purpose register (r0-r7), found '{:?}'", dest_register),
-                dt.line,
-                dt.column,
-                Some(dt.column + dt.lexeme.len()),
-                dt.source,
-            );
-            return Err(err.into());
-        }
-    };
-
-    let (src_register, st) = parse_register(&dt, tokens)?;
-    let src_register = match src_register {
-        Register::General(reg) if (reg as u8) < 8 => reg,
-        _ => {
-            let err = AssemblyError::new(
-                format!("Expected general-purpose register (r0-r7), found '{:?}'", src_register),
-                st.line,
-                st.column,
-                Some(st.column + st.lexeme.len()),
-                st.source,
-            );
-            return Err(err.into());
-        }
-    };
+    let (src_register, _st) = parse_general_register_low(&dt, tokens)?;
 
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Eors { dest: dest_register, src: src_register }),
@@ -397,36 +439,8 @@ fn parse_eors<'src>(eors_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_ands<'src>(ands_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let (dest_register, dt) = parse_register(&ands_token, tokens)?;
-
-    let dest_register = match dest_register {
-        Register::General(reg) if (reg as u8) < 8 => reg,
-        _ => {
-            let err = AssemblyError::new(
-                format!("Expected general-purpose register (r0-r7), found '{:?}'", dest_register),
-                dt.line,
-                dt.column,
-                Some(dt.column + dt.lexeme.len()),
-                dt.source,
-            );
-            return Err(err.into());
-        }
-    };
-
-    let (src_register, st) = parse_register(&dt, tokens)?;
-    let src_register = match src_register {
-        Register::General(reg) if (reg as u8) < 8 => reg,
-        _ => {
-            let err = AssemblyError::new(
-                format!("Expected general-purpose register (r0-r7), found '{:?}'", src_register),
-                st.line,
-                st.column,
-                Some(st.column + st.lexeme.len()),
-                st.source,
-            );
-            return Err(err.into());
-        }
-    };
+    let (dest_register, dt) = parse_general_register_low(&ands_token, tokens)?;
+    let (src_register, _st) = parse_general_register_low(&dt, tokens)?;
 
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Ands { dest: dest_register, src: src_register }),
@@ -606,20 +620,7 @@ fn parse_push<'src>(push_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_str<'src>(str_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let (src_register, st) = parse_register(&str_token, tokens)?;
-    let src_reg = match src_register {
-        Register::General(reg) if (reg as u8) < 8 => reg,
-        _ => {
-            let err = AssemblyError::new(
-                format!("Expected general-purpose register (r0-r7), found '{:?}'", src_register),
-                st.line,
-                st.column,
-                Some(st.column + st.lexeme.len()),
-                st.source,
-            );
-            return Err(err.into());
-        }
-    };
+    let (src_reg, st) = parse_general_register_low(&str_token, tokens)?;
 
     let (dest_addr_register, dt) = parse_dereference(st, tokens)?;
     let dest_addr_reg = match dest_addr_register {
@@ -807,21 +808,7 @@ fn parse_movs<'src>(movs_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let (dest_register, dt) = parse_register(&adds_token, tokens)?;
-
-    let dest_register = match dest_register {
-        Register::General(reg) if (reg as u8) < 8 => reg,
-        _ => {
-            let err = AssemblyError::new(
-                format!("Expected general-purpose register (r0-r7) after {} mnemonic, found '{:?}'", adds_token.lexeme, dest_register),
-                dt.line,
-                dt.column,
-                Some(dt.column + dt.lexeme.len()),
-                dt.source,
-            );
-            return Err(err.into());
-        }
-    };
+    let (dest_register, dt) = parse_general_register_low(&adds_token, tokens)?;
 
     let hex_u8 = next_symbol_token_as(&[TokenKind::HexLiteralU8], "8-bit hex literal", &dt, tokens)?;
     let NodeKind::HexLiteral(hl @ HexLiteral::U8(_imm8)) = parse_hex_literal_u8(hex_u8).kind else { unreachable!() };
@@ -835,7 +822,7 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
 }
 
 fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let reference = next_symbol_token_as(&[TokenKind::Ref], "&reference", &branch_token, tokens)?;
+    let reference = next_symbol_token_as(&[TokenKind::LabelRef], "&reference", &branch_token, tokens)?;
     let node = Node {
         kind: NodeKind::Instruction(Instruction::Branch { reference: reference.lexeme.to_string(), cond: None }),
         token: branch_token,
@@ -845,7 +832,7 @@ fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item 
 }
 
 fn parse_branch_with_link<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let reference = next_symbol_token_as(&[TokenKind::Ref], "&reference", &branch_token, tokens)?;
+    let reference = next_symbol_token_as(&[TokenKind::LabelRef], "&reference", &branch_token, tokens)?;
     let node = Node {
         kind: NodeKind::Instruction(Instruction::BranchWithLink { reference: reference.lexeme.to_string(), cond: None }),
         token: branch_token,

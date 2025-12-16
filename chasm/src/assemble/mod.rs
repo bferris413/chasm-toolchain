@@ -63,7 +63,8 @@ enum NodeKind {
     PseudoInstruction(PseudoInstruction),
     Register(Register),
     Label,
-    Ref,
+    LabelRef,
+    DefinedRef,
 }
 
 #[derive(Debug)]
@@ -86,9 +87,10 @@ enum Instruction {
 
 #[derive(Debug)]
 enum PseudoInstruction {
-    ThumbAddr { reference: String },
-    PadWithTo { pad_with: u8, pad_to: u32 },
     Define    { identifier: String, hex_literal: HexLiteral },
+    Mov       { reg: GeneralRegister, hex_literal: HexLiteral },
+    PadWithTo { pad_with: u8, pad_to: u32 },
+    ThumbAddr { reference: String },
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -298,8 +300,9 @@ enum TokenKind {
     HexLiteralU16,
     HexLiteralU8,
     Identifier,
+    DefinedRef,
     Label,
-    Ref,
+    LabelRef,
     LBracket,
     RBracket,
     LCurly,
@@ -324,7 +327,8 @@ impl Display for TokenKind {
             TokenKind::RCurly => write!(f, "right curly"),
             TokenKind::LParen => write!(f, "left paren"),
             TokenKind::RParen => write!(f, "right paren"),
-            TokenKind::Ref => write!(f, "reference"),
+            TokenKind::LabelRef => write!(f, "& reference"),
+            TokenKind::DefinedRef => write!(f, "$ reference"),
             TokenKind::PseudoIdentifier => write!(f, "pseudo identifier"),
             TokenKind::Comma => write!(f, "comma"),
         }
@@ -1201,5 +1205,53 @@ mod tests {
         let err = assemble_source(&source).unwrap_err();
 
         assert!(err.to_string().contains("Expected 'identifier' after '('"), "Err: {}", err);
+    }
+
+    #[test]
+    fn defined_reference_standalone_to_identifier_gets_resolved() {
+        let source = AssemblySource::from("
+            define!(BASE-ADDR, x1111.2222)
+            $BASE-ADDR
+        ".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x22, 0x22, 0x11, 0x11
+        ]);
+    }
+
+    #[test]
+    fn mov_pseudo_with_u32_gets_generated_as_movw_movt() {
+        let source = AssemblySource::from("mov!(r9, x0102.FFFF)".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x4F, 0xF6, 0xFF, 0x79, // MOVW R9 xFFFF
+            0xC0, 0xF2, 0x02, 0x19, // MOVT R9 x0102
+        ]);
+    }
+
+    #[test]
+    fn mov_pseudo_with_u16_gets_generated_as_movw() {
+        let source = AssemblySource::from("mov!(r0, x1234)".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x41, 0xF2, 0x34, 0x20, // MOVW R0 x1234
+        ]);
+    }
+
+    #[test]
+    fn mov_pseudo_with_u8_gets_generated_as_movs() {
+        let source = AssemblySource::from("mov!(r4, x12)".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert_eq!(machine_code.bytes, vec![
+            0x12, 0x24, // MOVS R4 x12
+        ]);
     }
 }
