@@ -7,13 +7,20 @@
 # hardware (TI TM4C123GH6PM).
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 <path to firmware>"
+    printf "Usage: %s <path to firmware>\n" "$0"
     exit 1
 fi
+
+gdb_port=1234
+
+printf "Starting QEMU with firmware: %s\n" "$1"
+printf "GDB server listening at port: %s\n" "$gdb_port"
+printf "\nCtrl-A → X to exit.\n\n"
 
 qemu-system-arm \
     -M lm3s6965evb \
     -cpu cortex-m4 \
     -kernel "$1" \
     -nographic \
-    -S -gdb tcp::1234
+    -monitor tcp:127.0.0.1:4444,server,nowait \
+    -S -gdb tcp::"$gdb_port"

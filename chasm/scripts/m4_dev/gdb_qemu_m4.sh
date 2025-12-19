@@ -7,7 +7,7 @@ if [ -z "$1" ]; then
     exit 1
 fi
 
-arm-none-eabi-gdb \
+cgdb -d arm-none-eabi-gdb -- \
     -ex "set architecture arm" \
     -ex "target remote :1234" \
     -ex "restore $1 binary 0x00000000"
