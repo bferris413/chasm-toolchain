@@ -6,7 +6,11 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Result};
 
-use crate::assemble::{AssemblyAst, AssemblyModule, Condition, GeneralRegister, HexLiteral, Instruction, MachineCode, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister};
+use crate::assemble::{
+    AssemblyAst, AssemblyModule, Condition, GeneralRegister, HexLiteral,
+    Instruction, MachineCode, NodeKind, PoppableRegister, PseudoInstruction,
+    PushableRegister
+};
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
@@ -15,6 +19,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
     let mut labels = HashMap::new();
     let mut unresolved_refs = HashMap::new();
     let mut definitions = HashMap::new();
+    let mut pub_definitions = HashMap::new();
     let mut imports = HashSet::new();
 
     // generate valid code and collect forward refs
@@ -27,7 +32,15 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
                 generate_instruction(&instr, &mut code_bytes, &labels, &mut unresolved_refs)?;
             }
             NodeKind::PseudoInstruction(instr) => {
-                generate_pseudo_instruction(instr, &mut code_bytes, &labels, &mut unresolved_refs, &mut definitions, &mut imports)?;
+                generate_pseudo_instruction(
+                    instr,
+                    &mut code_bytes,
+                    &labels,
+                    &mut unresolved_refs,
+                    &mut definitions,
+                    &mut pub_definitions,
+                    &mut imports
+                )?;
             }
             NodeKind::Label => {
                 let label = &node.token.lexeme[1..]; // strip '@'
@@ -130,7 +143,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
         }
     }
 
-    Ok(MachineCode { bytes: code_bytes, labels, definitions, imports })
+    Ok(MachineCode { bytes: code_bytes, labels, definitions, imports, pub_definitions })
 }
 
 fn generate_hex_literal(lit: &HexLiteral, output: &mut Vec<u8>) {
@@ -151,11 +164,15 @@ fn generate_pseudo_instruction(
     labels: &HashMap<String, usize>,
     unresolved_refs: &mut HashMap<String, Vec<Patch>>,
     definitions: &mut HashMap<String, HexLiteral>,
+    pub_definitions: &mut HashMap<String, HexLiteral>,
     imports: &mut HashSet<String>,
 ) -> Result<()> {
     match pseudo {
         PseudoInstruction::Define { identifier, hex_literal } => {
-            generate_define(identifier, hex_literal, definitions)?;
+            generate_define(identifier, hex_literal, definitions, pub_definitions)?;
+        }
+        PseudoInstruction::DefinePub { identifier, hex_literal } => {
+            generate_define_pub(identifier, hex_literal, definitions, pub_definitions)?;
         }
         PseudoInstruction::Import { module_name } => {
             generate_import(module_name, imports)?;
@@ -482,13 +499,32 @@ fn generate_mov(
 
 }
 
+fn generate_define_pub(
+    identifier: String,
+    hex_literal: HexLiteral,
+    definitions: &HashMap<String, HexLiteral>,
+    pub_definitions: &mut HashMap<String, HexLiteral>,
+) -> Result<()> {
+    if definitions.contains_key(&identifier) {
+        bail!("Duplicate definition of '{identifier}'");
+    } else if pub_definitions.contains_key(&identifier) {
+        bail!("Duplicate public definition of '{identifier}'");
+    }
+
+    pub_definitions.insert(identifier.to_string(), hex_literal);
+    Ok(())
+}
+
 fn generate_define(
     identifier: String,
     hex_literal: HexLiteral,
     definitions: &mut HashMap<String, HexLiteral>,
+    pub_definitions: &HashMap<String, HexLiteral>,
 ) -> Result<()> {
     if definitions.contains_key(&identifier) {
-        bail!("Duplicate definition for '{identifier}'");
+        bail!("Duplicate definition of '{identifier}'");
+    } else if pub_definitions.contains_key(&identifier) {
+        bail!("Duplicate public definition of '{identifier}'");
     }
 
     definitions.insert(identifier.to_string(), hex_literal);

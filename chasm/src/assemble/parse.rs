@@ -5,7 +5,11 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
-use crate::assemble::{AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, GeneralRegister, HexLiteral, Instruction, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, Register, Token, TokenKind, token};
+use crate::assemble::{
+    AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition,
+    GeneralRegister, HexLiteral, Instruction, Node, NodeKind, PoppableRegister,
+    PseudoInstruction, PushableRegister, Register, Token, TokenKind
+};
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
@@ -214,6 +218,7 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
         "thumb-addr!" => parse_thumb_addr_pseudo(token, tokens),
         "pad-with-to!" => parse_pad_with_to_pseudo(token, tokens),
         "define!" => parse_define_pseudo(token, tokens),
+        "define-pub!" => parse_define_pub_pseudo(token, tokens),
         "mov!" => parse_mov_pseudo(token, tokens),
         "import!" => parse_import_pseudo(token, tokens),
         other => {
@@ -299,6 +304,16 @@ fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn
     };
 
     Ok(node)
+}
+
+fn parse_define_pub_pseudo<'src>(define_pub_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let mut define_node = parse_define_pseudo(define_pub_token, tokens)?;
+    let NodeKind::PseudoInstruction(PseudoInstruction::Define { identifier, hex_literal }) = define_node.kind else {
+        unreachable!()
+    };
+
+    define_node.kind = NodeKind::PseudoInstruction(PseudoInstruction::DefinePub { identifier, hex_literal });
+    Ok(define_node)
 }
 
 fn parse_define_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {

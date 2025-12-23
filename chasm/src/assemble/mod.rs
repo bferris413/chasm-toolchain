@@ -88,6 +88,7 @@ enum Instruction {
 #[derive(Debug)]
 enum PseudoInstruction {
     Define    { identifier: String, hex_literal: HexLiteral },
+    DefinePub { identifier: String, hex_literal: HexLiteral },
     Import    { module_name: String },
     Mov       { reg: GeneralRegister, hex_literal: HexLiteral },
     PadWithTo { pad_with: u8, pad_to: u32 },
@@ -284,6 +285,7 @@ struct MachineCode {
     bytes: Vec<u8>,
     labels: HashMap<String, usize>,
     definitions: HashMap<String, HexLiteral>,
+    pub_definitions: HashMap<String, HexLiteral>,
     imports: HashSet<String>,
 }
 
@@ -1269,5 +1271,16 @@ mod tests {
         let machine_code = assemble_source(&source).unwrap();
 
         assert!(machine_code.imports.contains("tm4c123gh6pm"));
+    }
+
+    #[test]
+    fn define_pub_pseudo_creates_a_publicly_visible_definition() {
+        let source = AssemblySource::from("define-pub!(code-start, x2000.0000)".to_string());
+        let exp_hex_lit = HexLiteral::U32(0x20000000);
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        let res = machine_code.pub_definitions.get("code-start").unwrap();
+        assert_eq!(res, &exp_hex_lit);
     }
 }
