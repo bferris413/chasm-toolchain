@@ -88,6 +88,7 @@ enum Instruction {
 #[derive(Debug)]
 enum PseudoInstruction {
     Define    { identifier: String, hex_literal: HexLiteral },
+    Import    { module_name: String },
     Mov       { reg: GeneralRegister, hex_literal: HexLiteral },
     PadWithTo { pad_with: u8, pad_to: u32 },
     ThumbAddr { reference: String },
@@ -283,6 +284,12 @@ struct MachineCode {
     bytes: Vec<u8>,
     labels: HashMap<String, usize>,
     definitions: HashMap<String, HexLiteral>,
+    imports: HashSet<String>,
+}
+
+#[derive(Debug)]
+struct AssemblyModule {
+    module_name: String,
 }
 
 #[derive(Debug)]
@@ -1253,5 +1260,14 @@ mod tests {
         assert_eq!(machine_code.bytes, vec![
             0x12, 0x24, // MOVS R4 x12
         ]);
+    }
+
+    #[test]
+    fn import_pseudo_stores_imports() {
+        let source = AssemblySource::from("import!(tm4c123gh6pm)".to_string());
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        assert!(machine_code.imports.contains("tm4c123gh6pm"));
     }
 }

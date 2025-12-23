@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::Args;
 
 pub mod assemble;
+pub mod link;
 
 #[derive(Args, Debug)]
 pub struct AssembleArgs {

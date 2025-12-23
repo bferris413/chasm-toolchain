@@ -215,6 +215,7 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
         "pad-with-to!" => parse_pad_with_to_pseudo(token, tokens),
         "define!" => parse_define_pseudo(token, tokens),
         "mov!" => parse_mov_pseudo(token, tokens),
+        "import!" => parse_import_pseudo(token, tokens),
         other => {
             let err = AssemblyError::new(
                 format!("Found unknown pseudo-instruction '{}'", token.lexeme),
@@ -226,6 +227,19 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
             Err(err.into())
         }
     }
+}
+
+fn parse_import_pseudo<'src>(import_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let lparen = next_symbol_token_as(&[TokenKind::LParen], "(", &import_token, tokens)?;
+    let module_name_token = next_symbol_token_as(&[TokenKind::Identifier], "module name", &lparen, tokens)?;
+    let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &module_name_token, tokens)?;
+
+    let node = Node {
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::Import { module_name: module_name_token.lexeme.to_string() }),
+        token: import_token,
+    };
+
+    Ok(node)
 }
 
 fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {

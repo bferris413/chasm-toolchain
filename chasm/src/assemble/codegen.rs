@@ -2,11 +2,11 @@
 //! 
 //! ARMv7 generated using https://developer.arm.com/documentation/ddi0403/ee.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Result};
 
-use crate::assemble::{AssemblyAst, Condition, GeneralRegister, HexLiteral, Instruction, MachineCode, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister};
+use crate::assemble::{AssemblyAst, AssemblyModule, Condition, GeneralRegister, HexLiteral, Instruction, MachineCode, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister};
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
@@ -15,6 +15,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
     let mut labels = HashMap::new();
     let mut unresolved_refs = HashMap::new();
     let mut definitions = HashMap::new();
+    let mut imports = HashSet::new();
 
     // generate valid code and collect forward refs
     for node in ast.nodes.into_iter() {
@@ -26,7 +27,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
                 generate_instruction(&instr, &mut code_bytes, &labels, &mut unresolved_refs)?;
             }
             NodeKind::PseudoInstruction(instr) => {
-                generate_pseudo_instruction(instr, &mut code_bytes, &labels, &mut unresolved_refs, &mut definitions)?;
+                generate_pseudo_instruction(instr, &mut code_bytes, &labels, &mut unresolved_refs, &mut definitions, &mut imports)?;
             }
             NodeKind::Label => {
                 let label = &node.token.lexeme[1..]; // strip '@'
@@ -129,7 +130,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
         }
     }
 
-    Ok(MachineCode { bytes: code_bytes, labels, definitions })
+    Ok(MachineCode { bytes: code_bytes, labels, definitions, imports })
 }
 
 fn generate_hex_literal(lit: &HexLiteral, output: &mut Vec<u8>) {
@@ -150,21 +151,25 @@ fn generate_pseudo_instruction(
     labels: &HashMap<String, usize>,
     unresolved_refs: &mut HashMap<String, Vec<Patch>>,
     definitions: &mut HashMap<String, HexLiteral>,
+    imports: &mut HashSet<String>,
 ) -> Result<()> {
     match pseudo {
-        PseudoInstruction::ThumbAddr { reference } => {
-            let not_as_patch = None;
-            generate_thumb_addr_pseudo(&reference, output, labels, unresolved_refs, not_as_patch)?;
+        PseudoInstruction::Define { identifier, hex_literal } => {
+            generate_define(identifier, hex_literal, definitions)?;
+        }
+        PseudoInstruction::Import { module_name } => {
+            generate_import(module_name, imports)?;
+        }
+        PseudoInstruction::Mov { reg, hex_literal } => {
+            generate_mov(reg, hex_literal, output)?;
         }
         PseudoInstruction::PadWithTo { pad_with, pad_to } => {
             let not_as_patch = None;
             generate_pad_with_to(pad_with, pad_to, output, labels, unresolved_refs, not_as_patch)?;
         }
-        PseudoInstruction::Define { identifier, hex_literal } => {
-            generate_define(identifier, hex_literal, definitions)?;
-        }
-        PseudoInstruction::Mov { reg, hex_literal } => {
-            generate_mov(reg, hex_literal, output)?;
+        PseudoInstruction::ThumbAddr { reference } => {
+            let not_as_patch = None;
+            generate_thumb_addr_pseudo(&reference, output, labels, unresolved_refs, not_as_patch)?;
         }
     }
 
@@ -424,6 +429,15 @@ fn generate_instruction(
     }
 
     Ok(())
+}
+
+fn generate_import(module_name: String, imports: &mut HashSet<String>) -> Result<()> {
+    if imports.contains(&module_name) {
+        bail!("Duplicate import for module '{module_name}'");
+    } else {
+        imports.insert(module_name);
+        Ok(())
+    }
 }
 
 fn generate_mov(
