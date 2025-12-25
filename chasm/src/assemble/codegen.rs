@@ -7,20 +7,21 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{bail, Result};
 
 use crate::assemble::{
-    AssemblyAst, AssemblyModule, Condition, GeneralRegister, HexLiteral,
-    Instruction, MachineCode, NodeKind, PoppableRegister, PseudoInstruction,
+    AssemblyAst, Condition, GeneralRegister, HexLiteral,
+    Instruction, AssemblyModule, NodeKind, PoppableRegister, PseudoInstruction,
     PushableRegister
 };
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
-pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
+pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<AssemblyModule> {
     let mut code_bytes = Vec::new();
     let mut labels = HashMap::new();
     let mut unresolved_refs = HashMap::new();
     let mut definitions = HashMap::new();
     let mut pub_definitions = HashMap::new();
     let mut imports = HashSet::new();
+    let mut import_refs = HashMap::new();
 
     // generate valid code and collect forward refs
     for node in ast.nodes.into_iter() {
@@ -143,7 +144,7 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<MachineCode> {
         }
     }
 
-    Ok(MachineCode { bytes: code_bytes, labels, definitions, imports, pub_definitions })
+    Ok(AssemblyModule { code: code_bytes, labels, definitions, imports, pub_definitions, import_refs })
 }
 
 fn generate_hex_literal(lit: &HexLiteral, output: &mut Vec<u8>) {

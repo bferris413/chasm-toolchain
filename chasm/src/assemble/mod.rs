@@ -19,13 +19,13 @@ pub fn assemble(args: &AssembleArgs) -> Result<()> {
         .and_then(|s| assemble_source(&s))?;
 
     let outfile = args.file.with_extension("bin");
-    fs::write(&outfile, &machine_code.bytes)
+    fs::write(&outfile, &machine_code.code)
         .with_context(|| format!("Failed to write binary file '{}'", outfile.display()))?;
 
     Ok(())
 }
 
-fn assemble_source(source: &AssemblySource) -> Result<MachineCode> {
+fn assemble_source(source: &AssemblySource) -> Result<AssemblyModule> {
     tokenize(source)
         .and_then(parse)
         .and_then(codegen)
@@ -281,17 +281,13 @@ impl<'src> DerefMut for AssemblyTokens<'src> {
     }
 }
 #[derive(Debug, Default)]
-struct MachineCode {
-    bytes: Vec<u8>,
+struct AssemblyModule {
+    code: Vec<u8>,
     labels: HashMap<String, usize>,
     definitions: HashMap<String, HexLiteral>,
     pub_definitions: HashMap<String, HexLiteral>,
     imports: HashSet<String>,
-}
-
-#[derive(Debug)]
-struct AssemblyModule {
-    module_name: String,
+    import_refs: HashMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -376,7 +372,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![0x78, 0x56, 0x34, 0x12]);
+        assert_eq!(machine_code.code, vec![0x78, 0x56, 0x34, 0x12]);
     } 
 
     #[test]
@@ -385,7 +381,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![0x34, 0x12]);
+        assert_eq!(machine_code.code, vec![0x34, 0x12]);
     } 
 
     #[test]
@@ -394,7 +390,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![0x12]);
+        assert_eq!(machine_code.code, vec![0x12]);
     } 
 
     #[test]
@@ -458,7 +454,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![0x01, 0x20]);
+        assert_eq!(machine_code.code, vec![0x01, 0x20]);
     }
 
     #[test]
@@ -503,7 +499,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![0x01, 0x30]);
+        assert_eq!(machine_code.code, vec![0x01, 0x30]);
     }
 
     #[test]
@@ -512,7 +508,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![0xFF, 0x37]);
+        assert_eq!(machine_code.code, vec![0xFF, 0x37]);
     }
 
     #[test]
@@ -606,7 +602,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x01, 0x20, // MOVS R0, #1
             0x01, 0x30, // ADDS R0, #1
             0xFD, 0xE7, // B to ADDS
@@ -650,7 +646,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap(); 
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x01, 0x01, 0x01, 0x01,
             0x01, 0x30, // ADDS R0, #1
         ]);
@@ -681,7 +677,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, exp_bytes);
+        assert_eq!(machine_code.code, exp_bytes);
     }
 
     #[test]
@@ -694,7 +690,7 @@ mod tests {
         // b11110110_01001111_01110101_11111111
         // xF64F.75FF
         // x4FF6.FF75
-        assert_eq!(machine_code.bytes, vec![ 0x4F, 0xF6, 0xFF, 0x75 ]);
+        assert_eq!(machine_code.code, vec![ 0x4F, 0xF6, 0xFF, 0x75 ]);
     }
 
     #[test]
@@ -707,7 +703,7 @@ mod tests {
         // b11110110_01001111_01111001_11111111
         // xF64F.79FF
         // x4FF6.FF79
-        assert_eq!(machine_code.bytes, vec![ 0x4F, 0xF6, 0xFF, 0x79 ]);
+        assert_eq!(machine_code.code, vec![ 0x4F, 0xF6, 0xFF, 0x79 ]);
     }
 
     #[test]
@@ -719,7 +715,7 @@ mod tests {
         // b11110010_11000000_00000010_00000001
         // xF2C0.0201
         // xC0F2.0102
-        assert_eq!(machine_code.bytes, vec![ 0xC0, 0xF2, 0x01, 0x02 ]);
+        assert_eq!(machine_code.code, vec![ 0xC0, 0xF2, 0x01, 0x02 ]);
     }
 
     #[test]
@@ -732,7 +728,7 @@ mod tests {
         // b11110110_11001111_01111100_11111111
         // xF6CF.7CFF
         // xCFF6.FF7C
-        assert_eq!(machine_code.bytes, vec![ 0xCF, 0xF6, 0xFF, 0x7C ]);
+        assert_eq!(machine_code.code, vec![ 0xCF, 0xF6, 0xFF, 0x7C ]);
     }
 
     #[test]
@@ -745,7 +741,7 @@ mod tests {
         // b01101000_00000001
         // x6801
         // x0168
-        assert_eq!(machine_code.bytes, vec![ 0x01, 0x68 ]);
+        assert_eq!(machine_code.code, vec![ 0x01, 0x68 ]);
     }
 
     #[test]
@@ -758,7 +754,7 @@ mod tests {
         // b01101000_00010100
         // x6814
         // x1468
-        assert_eq!(machine_code.bytes, vec![ 0x14, 0x68 ]);
+        assert_eq!(machine_code.code, vec![ 0x14, 0x68 ]);
     }
 
     #[test]
@@ -770,7 +766,7 @@ mod tests {
         // b111110001101_1001_0010_000000000000
         // b11111000_11011001_00100000_00000000
         // xD9F8.0020
-        assert_eq!(machine_code.bytes, vec![ 0xD9, 0xF8, 0x00, 0x20 ]);
+        assert_eq!(machine_code.code, vec![ 0xD9, 0xF8, 0x00, 0x20 ]);
     }
 
     #[test]
@@ -782,7 +778,7 @@ mod tests {
         // b111110001101_0001_1100_000000000000
         // b11111000_11010001_11000000_00000000
         // xD1F8.00C0
-        assert_eq!(machine_code.bytes, vec![ 0xD1, 0xF8, 0x00, 0xC0 ]);
+        assert_eq!(machine_code.code, vec![ 0xD1, 0xF8, 0x00, 0xC0 ]);
     }
 
     #[test]
@@ -794,7 +790,7 @@ mod tests {
         // b0100001100_101_011
         // b01000011_00101011
         // x2B43
-        assert_eq!(machine_code.bytes, vec![ 0x2B, 0x43 ]);
+        assert_eq!(machine_code.code, vec![ 0x2B, 0x43 ]);
     }
 
     #[test]
@@ -806,7 +802,7 @@ mod tests {
         // b0110000000_111_010
         // b01100000_00111010
         // x3A60
-        assert_eq!(machine_code.bytes, vec![ 0x3A, 0x60 ]);
+        assert_eq!(machine_code.code, vec![ 0x3A, 0x60 ]);
     }
 
     #[test]
@@ -818,7 +814,7 @@ mod tests {
         // b0100000000_001_110
         // b01000000_00001110
         // x0E40
-        assert_eq!(machine_code.bytes, vec![ 0x0E, 0x40 ]);
+        assert_eq!(machine_code.code, vec![ 0x0E, 0x40 ]);
     }
 
     #[test]
@@ -829,7 +825,7 @@ mod tests {
 
         // b11010000_11111110
         // xFED0
-        assert_eq!(machine_code.bytes, vec![ 0xFE, 0xD0 ]);
+        assert_eq!(machine_code.code, vec![ 0xFE, 0xD0 ]);
     }
 
     #[test]
@@ -844,7 +840,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x11, 0x11, 0x11, 0x11,
             0x22, 0x22, 0x22, 0x22,
             0x04, 0x00, 0x00, 0x00, // address of label (8 bytes in)
@@ -863,7 +859,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x10, 0x00, 0x00, 0x00, // address of label (16 bytes in)
             0x11, 0x11, 0x11, 0x11,
             0x22, 0x22, 0x22, 0x22,
@@ -885,7 +881,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x0C, 0x00, 0x00, 0x00, // address of label (12 bytes in)
             0x11, 0x11, 0x11, 0x11,
             0x22, 0x22, 0x22, 0x22,
@@ -914,7 +910,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             // branch
             0x07, 0xE0,
             // multiple movs
@@ -941,7 +937,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x05, 0x00, 0x00, 0x00, // address of label (4 bytes in) | 1
         ]);
     }
@@ -960,7 +956,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x00, 0x00, 0x00, 0x00,
             0x11, 0x11, 0x11, 0x11,
             0x22, 0x22, 0x22, 0x22, // label here
@@ -984,7 +980,7 @@ mod tests {
             bytes.extend(vec![0x11; 0x100 - bytes.len()]);
             bytes
         };
-        assert_eq!(machine_code.bytes, exp_bytes);
+        assert_eq!(machine_code.code, exp_bytes);
     }
 
     #[test]
@@ -1010,7 +1006,7 @@ mod tests {
 
         // 01000000_01_111_001
         // 01000000_01111001
-        assert_eq!(machine_code.bytes, vec![0x79, 0x40]);
+        assert_eq!(machine_code.code, vec![0x79, 0x40]);
     }
 
     #[test]
@@ -1032,7 +1028,7 @@ mod tests {
 
         // 01000111_0_1110_000
         // 01000111_01110000
-        assert_eq!(machine_code.bytes, vec![0x70, 0x47]);
+        assert_eq!(machine_code.code, vec![0x70, 0x47]);
     }
 
     #[test]
@@ -1046,7 +1042,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x00, 0xF0, 0x04, 0xF8,
             0x00, 0x00, 0x00, 0x00,
             0x11, 0x11, 0x11, 0x11
@@ -1066,7 +1062,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x00, 0x00, 0x00, 0x00,
             0x11, 0x11, 0x11, 0x11,
             0x22, 0x22, 0x22, 0x22,
@@ -1083,7 +1079,7 @@ mod tests {
 
         // b1011010_1_11111111
         // b10110101_11111111
-        assert_eq!(machine_code.bytes, vec![0xFF, 0xB5]);
+        assert_eq!(machine_code.code, vec![0xFF, 0xB5]);
     }
 
     #[test]
@@ -1149,7 +1145,7 @@ mod tests {
 
         // b1011110_1_11110110
         // b10111101_11110110
-        assert_eq!(machine_code.bytes, vec![0xF6, 0xBD]);
+        assert_eq!(machine_code.code, vec![0xF6, 0xBD]);
     }
 
     #[test]
@@ -1225,7 +1221,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x22, 0x22, 0x11, 0x11
         ]);
     }
@@ -1236,7 +1232,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x4F, 0xF6, 0xFF, 0x79, // MOVW R9 xFFFF
             0xC0, 0xF2, 0x02, 0x19, // MOVT R9 x0102
         ]);
@@ -1248,7 +1244,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x41, 0xF2, 0x34, 0x20, // MOVW R0 x1234
         ]);
     }
@@ -1259,7 +1255,7 @@ mod tests {
 
         let machine_code = assemble_source(&source).unwrap();
 
-        assert_eq!(machine_code.bytes, vec![
+        assert_eq!(machine_code.code, vec![
             0x12, 0x24, // MOVS R4 x12
         ]);
     }
@@ -1277,6 +1273,19 @@ mod tests {
     fn define_pub_pseudo_creates_a_publicly_visible_definition() {
         let source = AssemblySource::from("define-pub!(code-start, x2000.0000)".to_string());
         let exp_hex_lit = HexLiteral::U32(0x20000000);
+
+        let machine_code = assemble_source(&source).unwrap();
+
+        let res = machine_code.pub_definitions.get("code-start").unwrap();
+        assert_eq!(res, &exp_hex_lit);
+    }
+
+    #[test]
+    fn import_reference_creates_import_ref_in_module() {
+        let source = AssemblySource::from("
+            import!(my-module)
+            my-module::SOME-CONST
+        ".to_string());
 
         let machine_code = assemble_source(&source).unwrap();
 
