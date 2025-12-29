@@ -24,6 +24,10 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
             ';' => {
                 skip_comment(&mut chars, &mut col);
             }
+            ':' => {
+                let module_sep_token = tokenize_module_sep(source, &mut chars, i, line, &mut col)?;
+                tokens.push(module_sep_token);
+            }
             '(' | ')' => {
                 let paren = tokenize_paren(source, i, line, &mut col);
                 tokens.push(paren);
@@ -255,6 +259,45 @@ fn tokenize_ref<'src>(
 
     let t = Token {
         kind,
+        lexeme,
+        line,
+        column: start_col,
+        source,
+    };
+
+    Ok(t)
+}
+
+fn tokenize_module_sep<'src>(
+    source: &'src AssemblySource,
+    chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) -> Result<Token<'src>> {
+    let mut cur_index = start_index + 1;
+    let start_col = *col;
+    *col += 1;
+
+    if !matches!(chars.peek(), Some((_, c)) if *c == ':') {
+        let err = AssemblyError::new(
+            "Expected ':' to finish module separator".to_string(),
+            line,
+            start_col,
+            Some(*col),
+            source,
+        );
+        return Err(err.into());
+    }
+
+    let (_, _) = chars.next().unwrap();
+    *col += 1;
+    cur_index += 1;
+
+    let lexeme = &source[start_index..cur_index];
+
+    let t = Token {
+        kind: TokenKind::ModuleSep,
         lexeme,
         line,
         column: start_col,

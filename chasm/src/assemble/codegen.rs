@@ -7,14 +7,12 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{bail, Result};
 
 use crate::assemble::{
-    AssemblyAst, Condition, GeneralRegister, HexLiteral,
-    Instruction, AssemblyModule, NodeKind, PoppableRegister, PseudoInstruction,
-    PushableRegister
+    AssemblyAst, AssemblyModule, BranchPatch, BranchWithLinkPatch, Condition, GeneralRegister, HexLiteral, Instruction, ModuleRef, NodeKind, Patch, PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind, ThumbAddrPseudoPatch
 };
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
-pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<AssemblyModule> {
+pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<AssemblyModule> {
     let mut code_bytes = Vec::new();
     let mut labels = HashMap::new();
     let mut unresolved_refs = HashMap::new();
@@ -52,19 +50,31 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<AssemblyModule> {
 
                 labels.insert(label.to_string(), code_bytes.len());
             }
-            NodeKind::LabelRef => {
-                let reference = &node.token.lexeme[1..]; // strip '&'
-                match labels.get(reference) {
-                    Some(&addr) => generate_ref(addr as u32, &mut code_bytes),
-                    None => {
-                        let patch = Patch::Raw(RawPatch { offset: code_bytes.len() });
-                        match unresolved_refs.get_mut(reference) {
-                            Some(patches) => patches.push(patch),
+            NodeKind::LabelRef(ref_kind) => {
+                match ref_kind {
+                    RefKind::LocalRef => {
+                        let reference = &node.token.lexeme[1..]; // strip '&'
+                        match labels.get(reference) {
+                            Some(&addr) => generate_ref(addr as u32, &mut code_bytes),
                             None => {
-                                unresolved_refs.insert(reference.to_string(), vec![patch]);
+                                let patch = Patch::Raw(RawPatch { offset: code_bytes.len() });
+                                match unresolved_refs.get_mut(reference) {
+                                    Some(patches) => patches.push(patch),
+                                    None => {
+                                        unresolved_refs.insert(reference.to_string(), vec![patch]);
+                                    }
+                                }
+
+                                generate_ref(REF_PLACEHOLDER, &mut code_bytes);
                             }
                         }
+                    }
+                    RefKind::ModuleRef(ModuleRef { module, member, .. }) => {
+                        let mod_refs = import_refs.entry(module).or_insert_with(|| HashMap::new());
+                        let ref_patches = mod_refs.entry(member).or_insert_with(|| Vec::new());
 
+                        let patch = Patch::Raw(RawPatch { offset: code_bytes.len() });
+                        ref_patches.push(patch);
                         generate_ref(REF_PLACEHOLDER, &mut code_bytes);
                     }
                 }
@@ -144,7 +154,8 @@ pub(crate) fn codegen(ast: AssemblyAst<'_>) -> Result<AssemblyModule> {
         }
     }
 
-    Ok(AssemblyModule { code: code_bytes, labels, definitions, imports, pub_definitions, import_refs })
+    let modname = modname.as_ref().to_string();
+    Ok(AssemblyModule { modname, code: code_bytes, labels, definitions, imports, pub_definitions, import_refs })
 }
 
 fn generate_hex_literal(lit: &HexLiteral, output: &mut Vec<u8>) {
@@ -742,37 +753,4 @@ fn generate_branch(
     }
 
     Ok(())
-}
-
-#[derive(Debug)]
-enum Patch {
-    Raw(RawPatch),
-    Branch(BranchPatch),
-    BranchWithLink(BranchWithLinkPatch),
-    ThumbAddrPseudo(ThumbAddrPseudoPatch),
-}
-
-#[derive(Debug)]
-struct RawPatch {
-    offset: usize,
-}
-
-#[derive(Debug)]
-struct BranchPatch {
-    offset: usize,
-    reference: String,
-    cond: Option<Condition>,
-}
-
-#[derive(Debug)]
-struct BranchWithLinkPatch {
-    offset: usize,
-    reference: String,
-    cond: Option<Condition>,
-}
-
-#[derive(Debug)]
-struct ThumbAddrPseudoPatch {
-    offset: usize,
-    reference: String,
 }

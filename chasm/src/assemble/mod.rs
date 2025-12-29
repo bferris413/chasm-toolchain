@@ -3,20 +3,25 @@ mod token;
 mod codegen;
 mod helpers;
 
-use std::{collections::{HashMap, HashSet}, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}};
+use std::{borrow::Borrow, collections::{HashMap, HashSet}, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}};
 
 use crate::{assemble::helpers::normalize_to_ascii_lower, AssembleArgs};
 use token::tokenize;
 use parse::parse;
 use codegen::codegen;
 
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 
 pub fn assemble(args: &AssembleArgs) -> Result<()> {
+    let modname = args.file
+        .file_stem()
+        .ok_or_else(|| anyhow!("Failed to get filename from '{}'", args.file.display()))
+        .map(|file_stem| file_stem.to_string_lossy())?;
+
     let machine_code = fs::read_to_string(&args.file)
         .with_context(|| format!("Failed to read assembly file '{}'", &args.file.display()))
         .map(|source| source.into())
-        .and_then(|s| assemble_source(&s))?;
+        .and_then(|s| assemble_source(modname, &s))?;
 
     let outfile = args.file.with_extension("bin");
     fs::write(&outfile, &machine_code.code)
@@ -25,10 +30,10 @@ pub fn assemble(args: &AssembleArgs) -> Result<()> {
     Ok(())
 }
 
-fn assemble_source(source: &AssemblySource) -> Result<AssemblyModule> {
+fn assemble_source(modname: impl AsRef<str>, source: &AssemblySource) -> Result<AssemblyModule> {
     tokenize(source)
         .and_then(parse)
-        .and_then(codegen)
+        .and_then(|ast| codegen(modname, ast))
 }
 
 #[derive(Debug)]
@@ -63,8 +68,20 @@ enum NodeKind {
     PseudoInstruction(PseudoInstruction),
     Register(Register),
     Label,
-    LabelRef,
+    LabelRef(RefKind),
     DefinedRef,
+}
+
+#[derive(Debug)]
+enum RefKind {
+    ModuleRef(ModuleRef),
+    LocalRef
+}
+
+#[derive(Debug)]
+struct ModuleRef {
+    module: ModuleName,
+    member: MemberName,
 }
 
 #[derive(Debug)]
@@ -95,7 +112,7 @@ enum PseudoInstruction {
     ThumbAddr { reference: String },
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u8)]
 enum Condition {
     Eq = 0b0000,
@@ -280,17 +297,68 @@ impl<'src> DerefMut for AssemblyTokens<'src> {
         &mut self.tokens
     }
 }
+
+#[derive(Debug, Default, Eq, PartialEq, Hash)]
+struct ModuleName(String);
+impl Borrow<str> for ModuleName {
+    fn borrow(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+#[derive(Debug, Default, Eq, PartialEq, Hash)]
+struct MemberName(String);
+impl Borrow<str> for MemberName {
+    fn borrow(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 #[derive(Debug, Default)]
 struct AssemblyModule {
+    modname: String,
     code: Vec<u8>,
     labels: HashMap<String, usize>,
     definitions: HashMap<String, HexLiteral>,
     pub_definitions: HashMap<String, HexLiteral>,
     imports: HashSet<String>,
-    import_refs: HashMap<String, usize>,
+    import_refs: HashMap<ModuleName, HashMap<MemberName, Vec<Patch>>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
+enum Patch {
+    Raw(RawPatch),
+    Branch(BranchPatch),
+    BranchWithLink(BranchWithLinkPatch),
+    ThumbAddrPseudo(ThumbAddrPseudoPatch),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct RawPatch {
+    offset: usize,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct BranchPatch {
+    offset: usize,
+    reference: String,
+    cond: Option<Condition>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct BranchWithLinkPatch {
+    offset: usize,
+    reference: String,
+    cond: Option<Condition>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ThumbAddrPseudoPatch {
+    offset: usize,
+    reference: String,
+}
+
+#[derive(Clone, Debug)]
 struct Token<'src> {
     kind: TokenKind,
     lexeme: &'src str,
@@ -316,6 +384,7 @@ enum TokenKind {
     RParen,
     Comma,
     PseudoIdentifier,
+    ModuleSep,
 }
 impl Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -336,6 +405,7 @@ impl Display for TokenKind {
             TokenKind::DefinedRef => write!(f, "$ reference"),
             TokenKind::PseudoIdentifier => write!(f, "pseudo identifier"),
             TokenKind::Comma => write!(f, "comma"),
+            TokenKind::ModuleSep => write!(f, "module separator"),
         }
     }
 }
@@ -370,7 +440,7 @@ mod tests {
     fn hex_word_gets_generated() {
         let source = AssemblySource::from("x1234.5678".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![0x78, 0x56, 0x34, 0x12]);
     } 
@@ -379,7 +449,7 @@ mod tests {
     fn hex_half_word_gets_generated() {
         let source = AssemblySource::from("x1234".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![0x34, 0x12]);
     } 
@@ -388,7 +458,7 @@ mod tests {
     fn hex_byte_gets_generated() {
         let source = AssemblySource::from("x12".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![0x12]);
     } 
@@ -397,7 +467,7 @@ mod tests {
     fn too_short_hex_string_returns_error() {
         let source = AssemblySource::from("x123".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Hex literal must have an even number of digits"));
     }
@@ -406,7 +476,7 @@ mod tests {
     fn hex_string_with_non_halfword_separator_returns_error() {
         let source = AssemblySource::from("x123.45678".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Hex literal separator must be after a full half-word (4 digits)"));
     }
@@ -415,7 +485,7 @@ mod tests {
     fn hex_string_starting_with_separator_returns_error() {
         let source = AssemblySource::from("x.12345678".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Hex literal cannot start with a separator"));
     }
@@ -424,7 +494,7 @@ mod tests {
     fn hex_string_ending_with_separator_returns_error() {
         let source = AssemblySource::from("x1234.".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Hex literal cannot end with a separator"));
     }
@@ -433,7 +503,7 @@ mod tests {
     fn hex_string_with_non_halfword_after_separator_returns_error() {
         let source = AssemblySource::from("x1234.567".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Hex literal must have an even number of digits"));
     }
@@ -443,7 +513,7 @@ mod tests {
         // first is fine, second is trailing
         let source = AssemblySource::from("x1234.5678.".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Hex literal cannot end with a separator"));
     }
@@ -452,7 +522,7 @@ mod tests {
     fn movs_with_well_formed_args_gets_generated() {
         let source = AssemblySource::from("MOVS R0 x01".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![0x01, 0x20]);
     }
@@ -461,7 +531,7 @@ mod tests {
     fn movs_with_missing_value_returns_error() {
         let source = AssemblySource::from("MOVS R0".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected '8-bit hex literal' after 'R0'"), "Err: {}", err);
     }
@@ -470,7 +540,7 @@ mod tests {
     fn movs_with_large_reg_returns_error() {
         let source = AssemblySource::from("MOVS R8 x01".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected general-purpose register (r0-r7)"));
     }
@@ -479,7 +549,7 @@ mod tests {
     fn movs_with_invalid_reg_returns_error() {
         let source = AssemblySource::from("MOVS xFF".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected 'register' after 'MOVS', found 'xFF'"), "Err: {}", err);
     }
@@ -488,7 +558,7 @@ mod tests {
     fn movs_with_eof_returns_error() {
         let source = AssemblySource::from("MOVS    ".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected 'register' after 'MOVS', found EOF"), "Err: {}", err);
     }
@@ -497,7 +567,7 @@ mod tests {
     fn adds_gets_generated() {
         let source = AssemblySource::from("ADDS R0 x01".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![0x01, 0x30]);
     }
@@ -506,7 +576,7 @@ mod tests {
     fn adds_with_r7_and_255_gets_generated() {
         let source = AssemblySource::from("ADDS R7 xFF".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![0xFF, 0x37]);
     }
@@ -515,7 +585,7 @@ mod tests {
     fn adds_with_large_reg_returns_error() {
         let source = AssemblySource::from("ADDS R12 xA1".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected general-purpose register (r0-r7)"));
     }
@@ -524,7 +594,7 @@ mod tests {
     fn adds_with_missing_value_returns_error() {
         let source = AssemblySource::from("ADDS R7".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected '8-bit hex literal' after 'R7'"), "Err: {}", err);
     }
@@ -533,7 +603,7 @@ mod tests {
     fn adds_with_invalid_reg_returns_error() {
         let source = AssemblySource::from("ADDS abc".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Invalid register 'abc' after 'ADDS'"), "Err: {}", err);
     }
@@ -542,7 +612,7 @@ mod tests {
     fn adds_with_eof_returns_error() {
         let source = AssemblySource::from("ADDS\n\n".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected 'register' after 'ADDS', found EOF"), "Err: {}", err);
     }
@@ -555,7 +625,7 @@ mod tests {
             MOVS R1 x02
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.labels.get("label"), Some(&2));
     }
@@ -569,7 +639,7 @@ mod tests {
             @label
         ".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Duplicate label 'label'"));
     }
@@ -585,7 +655,7 @@ mod tests {
             @loop
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.labels.get("label"), Some(&2));
         assert_eq!(machine_code.labels.get("loop"), Some(&4));
@@ -600,7 +670,7 @@ mod tests {
                 B &loop
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x01, 0x20, // MOVS R0, #1
@@ -616,7 +686,7 @@ mod tests {
             MOVS R0 x01
         ".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Attempted to generate unaligned"));
     }
@@ -630,7 +700,7 @@ mod tests {
                 B &loop
         ", "x01\n".repeat(4096)));
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Branch target '&loop' is too far away (offset -4100)"), "Err: {}", err);
     }
@@ -644,7 +714,7 @@ mod tests {
             ; ...
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap(); 
+        let machine_code = assemble_source("test", &source).unwrap(); 
 
         assert_eq!(machine_code.code, vec![
             0x01, 0x01, 0x01, 0x01,
@@ -675,7 +745,7 @@ mod tests {
             0xFD, 0xE7  // B
         ];
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, exp_bytes);
     }
@@ -684,7 +754,7 @@ mod tests {
     fn movw_gets_generated() {
         let source = AssemblySource::from("MOVW R5 xFFFF".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b11110_1_100100_1111_0_111_0101_11111111
         // b11110110_01001111_01110101_11111111
@@ -697,7 +767,7 @@ mod tests {
     fn movw_with_high_nibble_register_gets_generated() {
         let source = AssemblySource::from("MOVW R9 xFFFF".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b11110_1_100100_1111_0_111_1001_11111111
         // b11110110_01001111_01111001_11111111
@@ -710,7 +780,7 @@ mod tests {
     fn movt_gets_generated() {
         let source = AssemblySource::from("MOVT R2 x0001".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b11110010_11000000_00000010_00000001
         // xF2C0.0201
@@ -722,7 +792,7 @@ mod tests {
     fn movt_with_high_nibble_register_gets_generated() {
         let source = AssemblySource::from("MOVT R12 xFFFF".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b11110_1_101100_1111_0_111_1100_11111111
         // b11110110_11001111_01111100_11111111
@@ -735,7 +805,7 @@ mod tests {
     fn ldr_immediate_with_3_bit_src_dest_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("LDR R1 [R0]".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b01101_00000_000_001
         // b01101000_00000001
@@ -748,7 +818,7 @@ mod tests {
     fn ldr_immediate_with_another_3_bit_src_dest_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("LDR R4 [R2]".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b01101_00000_010_100
         // b01101000_00010100
@@ -761,7 +831,7 @@ mod tests {
     fn ldr_immediate_with_4_bit_src_gets_generated_as_t3_encoding() {
         let source = AssemblySource::from("LDR R2 [R9]".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b111110001101_1001_0010_000000000000
         // b11111000_11011001_00100000_00000000
@@ -773,7 +843,7 @@ mod tests {
     fn ldr_immediate_with_4_bit_dest_gets_generated_as_t3_encoding() {
         let source = AssemblySource::from("LDR R12 [R1]".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b111110001101_0001_1100_000000000000
         // b11111000_11010001_11000000_00000000
@@ -785,7 +855,7 @@ mod tests {
     fn orrs_register_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("ORRS R3 R5".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b0100001100_101_011
         // b01000011_00101011
@@ -797,7 +867,7 @@ mod tests {
     fn str_immediate_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("STR R2 [R7]".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b0110000000_111_010
         // b01100000_00111010
@@ -809,7 +879,7 @@ mod tests {
     fn ands_register_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("ANDS R6 R1".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b0100000000_001_110
         // b01000000_00001110
@@ -821,7 +891,7 @@ mod tests {
     fn beq_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("@label BEQ &label".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b11010000_11111110
         // xFED0
@@ -838,7 +908,7 @@ mod tests {
         "
         .to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x11, 0x11, 0x11, 0x11,
@@ -857,7 +927,7 @@ mod tests {
             @label
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x10, 0x00, 0x00, 0x00, // address of label (16 bytes in)
@@ -879,7 +949,7 @@ mod tests {
             &label
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x0C, 0x00, 0x00, 0x00, // address of label (12 bytes in)
@@ -908,7 +978,7 @@ mod tests {
             MOVS R0 x02
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             // branch
@@ -935,7 +1005,7 @@ mod tests {
             @label
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x05, 0x00, 0x00, 0x00, // address of label (4 bytes in) | 1
@@ -954,7 +1024,7 @@ mod tests {
             thumb-addr!(&label)
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x00, 0x00, 0x00, 0x00,
@@ -973,7 +1043,7 @@ mod tests {
             pad-with-to!(x11, x0000.0100)
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         let exp_bytes = {
             let mut bytes = vec![ 0x22, 0x22, 0x22, 0x22, ];
@@ -991,7 +1061,7 @@ mod tests {
             pad-with-to!(x11, x0000.0000)
         ".to_string());
 
-        let machine_code = assemble_source(&source);
+        let machine_code = assemble_source("test", &source);
 
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err();
@@ -1002,7 +1072,7 @@ mod tests {
     fn eors_with_two_register_ops_gets_generated_as_thumb1_t1() {
         let source = AssemblySource::from("EORS R1 R7".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // 01000000_01_111_001
         // 01000000_01111001
@@ -1013,7 +1083,7 @@ mod tests {
     fn eors_with_single_register_errors() {
         let source = AssemblySource::from("EORS R1".to_string());
 
-        let machine_code = assemble_source(&source);
+        let machine_code = assemble_source("test", &source);
 
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err().to_string();
@@ -1024,7 +1094,7 @@ mod tests {
     fn bx_with_lr_gets_generated_as_thumb1_t1() {
         let source = AssemblySource::from("BX LR".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // 01000111_0_1110_000
         // 01000111_01110000
@@ -1040,7 +1110,7 @@ mod tests {
             @label
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x00, 0xF0, 0x04, 0xF8,
@@ -1060,7 +1130,7 @@ mod tests {
             BL &label
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x00, 0x00, 0x00, 0x00,
@@ -1075,7 +1145,7 @@ mod tests {
     fn push_with_r0_through_r7_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("PUSH {R0, R1, R2, R3, R4, R5, R6, R7, LR}".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b1011010_1_11111111
         // b10110101_11111111
@@ -1086,7 +1156,7 @@ mod tests {
     fn push_with_duplicate_registers_errors() {
         let source = AssemblySource::from("PUSH {R0, R6, R7, R0}".to_string());
 
-        let machine_code = assemble_source(&source);
+        let machine_code = assemble_source("test", &source);
 
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err().to_string();
@@ -1097,7 +1167,7 @@ mod tests {
     fn push_with_no_registers_errors() {
         let source = AssemblySource::from("PUSH {}".to_string());
 
-        let machine_code = assemble_source(&source);
+        let machine_code = assemble_source("test", &source);
 
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err().to_string();
@@ -1108,7 +1178,7 @@ mod tests {
     fn push_with_unsupported_registers_in_list_errors() {
         let source = AssemblySource::from("PUSH {r1, r2, SP}".to_string());
 
-        let machine_code = assemble_source(&source);
+        let machine_code = assemble_source("test", &source);
 
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err().to_string();
@@ -1119,7 +1189,7 @@ mod tests {
     fn push_with_other_token_after_register_in_list_errors() {
         let source = AssemblySource::from("PUSH {r1 LR}".to_string());
 
-        let machine_code = assemble_source(&source);
+        let machine_code = assemble_source("test", &source);
 
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err().to_string();
@@ -1130,7 +1200,7 @@ mod tests {
     fn push_with_nothing_after_register_in_list_errors() {
         let source = AssemblySource::from("PUSH { LR".to_string());
 
-        let machine_code = assemble_source(&source);
+        let machine_code = assemble_source("test", &source);
 
         assert!(machine_code.is_err(), "{:?}", machine_code.unwrap());
         let err = machine_code.unwrap_err().to_string();
@@ -1141,7 +1211,7 @@ mod tests {
     fn pop_with_registers_and_pc_gets_generated_as_t1_encoding() {
         let source = AssemblySource::from("POP {R1, R2, R4, R5, R6, R7, PC}".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         // b1011110_1_11110110
         // b10111101_11110110
@@ -1152,7 +1222,7 @@ mod tests {
     fn pop_with_missing_command_returns_err() {
         let source = AssemblySource::from("POP {R1 PC}".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected ',' or '}'"), "Err: {}", err);
     }
@@ -1161,7 +1231,7 @@ mod tests {
     fn pop_with_empty_register_set_returns_error() {
         let source = AssemblySource::from("POP {}".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected 'register' after 'POP'"), "Err: {}", err);
     }
@@ -1170,7 +1240,7 @@ mod tests {
     fn pop_with_lr_and_pc_returns_error() {
         let source = AssemblySource::from("POP {R1, LR, R0, PC}".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("cannot pop both LR and PC"), "Err: {}", err);
     }
@@ -1179,7 +1249,7 @@ mod tests {
     fn define_stores_hex_literal_with_identifier() {
         let source = AssemblySource::from("define!(GPIO-F, x1111.2222)".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         let hex_lit = machine_code.definitions.get("GPIO-F").unwrap();
         assert_eq!(*hex_lit, HexLiteral::U32(0x11112222));
@@ -1189,7 +1259,7 @@ mod tests {
     fn define_without_identifier_fails() {
         let source = AssemblySource::from("define!(x1000, x1111.2222)".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected 'identifier' after '('"), "Err: {}", err);
     }
@@ -1198,7 +1268,7 @@ mod tests {
     fn define_without_comma_fails() {
         let source = AssemblySource::from("define!(BASE-LENGTH x1111.2222)".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected ',' after 'BASE-LENGTH'"), "Err: {}", err);
     }
@@ -1207,7 +1277,7 @@ mod tests {
     fn empty_define_fails() {
         let source = AssemblySource::from("define!()".to_string());
 
-        let err = assemble_source(&source).unwrap_err();
+        let err = assemble_source("test", &source).unwrap_err();
 
         assert!(err.to_string().contains("Expected 'identifier' after '('"), "Err: {}", err);
     }
@@ -1219,7 +1289,7 @@ mod tests {
             $BASE-ADDR
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x22, 0x22, 0x11, 0x11
@@ -1230,7 +1300,7 @@ mod tests {
     fn mov_pseudo_with_u32_gets_generated_as_movw_movt() {
         let source = AssemblySource::from("mov!(r9, x0102.FFFF)".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x4F, 0xF6, 0xFF, 0x79, // MOVW R9 xFFFF
@@ -1242,7 +1312,7 @@ mod tests {
     fn mov_pseudo_with_u16_gets_generated_as_movw() {
         let source = AssemblySource::from("mov!(r0, x1234)".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x41, 0xF2, 0x34, 0x20, // MOVW R0 x1234
@@ -1253,7 +1323,7 @@ mod tests {
     fn mov_pseudo_with_u8_gets_generated_as_movs() {
         let source = AssemblySource::from("mov!(r4, x12)".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code, vec![
             0x12, 0x24, // MOVS R4 x12
@@ -1264,7 +1334,7 @@ mod tests {
     fn import_pseudo_stores_imports() {
         let source = AssemblySource::from("import!(tm4c123gh6pm)".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         assert!(machine_code.imports.contains("tm4c123gh6pm"));
     }
@@ -1274,7 +1344,7 @@ mod tests {
         let source = AssemblySource::from("define-pub!(code-start, x2000.0000)".to_string());
         let exp_hex_lit = HexLiteral::U32(0x20000000);
 
-        let machine_code = assemble_source(&source).unwrap();
+        let machine_code = assemble_source("test", &source).unwrap();
 
         let res = machine_code.pub_definitions.get("code-start").unwrap();
         assert_eq!(res, &exp_hex_lit);
@@ -1283,13 +1353,15 @@ mod tests {
     #[test]
     fn import_reference_creates_import_ref_in_module() {
         let source = AssemblySource::from("
-            import!(my-module)
-            my-module::SOME-CONST
+            import!(my-mod)
+            &my-mod::SOME-CONST
         ".to_string());
 
-        let machine_code = assemble_source(&source).unwrap();
+        let module = assemble_source("test", &source).unwrap();
 
-        let res = machine_code.pub_definitions.get("code-start").unwrap();
-        assert_eq!(res, &exp_hex_lit);
+        let member_map = module.import_refs.get("my-mod").unwrap();
+        let usage_patches = member_map.get("SOME-CONST").unwrap();
+        let exp_patch = Patch::Raw(RawPatch { offset: 0 });
+        assert_eq!(usage_patches[0], exp_patch);
     }
 }

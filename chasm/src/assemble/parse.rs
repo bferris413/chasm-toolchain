@@ -1,21 +1,21 @@
 //! Parser for chasm assembly source code.
 
 use std::collections::HashSet;
+use std::iter::Peekable;
+use std::vec::IntoIter;
 
 use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
 use crate::assemble::{
-    AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition,
-    GeneralRegister, HexLiteral, Instruction, Node, NodeKind, PoppableRegister,
-    PseudoInstruction, PushableRegister, Register, Token, TokenKind
+    AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, GeneralRegister, HexLiteral, Instruction, MemberName, ModuleName, ModuleRef, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, RefKind, Register, Token, TokenKind
 };
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     let tokens = tokens.tokens;
 
     let mut nodes = Vec::new();
-    let mut tokens = tokens.into_iter();
+    let mut tokens = tokens.into_iter().peekable();
     while let Some(token) = tokens.next() {
         match token.kind {
             TokenKind::HexLiteralU32 => {
@@ -43,7 +43,7 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
                 nodes.push(node);
             }
             TokenKind::LabelRef => {
-                let node = parse_label_ref(token)?;
+                let node = parse_label_ref(token, &mut tokens)?;
                 nodes.push(node);
             }
             TokenKind::DefinedRef => {
@@ -64,6 +64,22 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
     }
 
     Ok(AssemblyAst { nodes })
+}
+
+fn parse_module_ref<'src>(
+    mod_token: &Token<'src>,
+    mod_sep_token: Token<'src>,
+    tokens: &mut dyn Iterator<Item = Token<'src>>
+) -> Result<ModuleRef> {
+    // caller already pulled '::' (all external module references are qualified, currently)
+    let mod_member = next_symbol_token_as(&[TokenKind::Identifier], "module member", &mod_sep_token, tokens)?;
+
+    let m = ModuleRef { 
+        module: ModuleName(mod_token.lexeme.to_string()),
+        member: MemberName(mod_member.lexeme.to_string()),
+    };
+
+    Ok(m)
 }
 
 fn parse_dereference<'src>(
@@ -142,16 +158,34 @@ fn parse_defined_ref<'src>(ref_token: Token<'src>) -> Result<Node<'src>> {
     Ok(node)
 }
 
-fn parse_label_ref<'src>(ref_token: Token<'src>) -> Result<Node<'src>> {
+fn parse_label_ref<'src>(mut ref_token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {
     assert!(ref_token.lexeme.starts_with('&'));
     assert!(ref_token.lexeme.len() > 1);
 
-    let node = Node {
-        kind: NodeKind::LabelRef,
-        token: ref_token,
-    };
+    if matches!(tokens.peek(), Some(t) if t.kind == TokenKind::ModuleSep) {
+        let mod_sep = tokens.next().unwrap();
 
-    Ok(node)
+        // TODO: Pretty sloppy, should just separate the lexeme from the reference
+        // as a struct member so callees don't have to think about it.
+        // vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+        // strip the leading '&' for module parsing, then restore it
+        let amp_lexeme = ref_token.lexeme;
+        ref_token.lexeme = &ref_token.lexeme[1..];
+
+        let mod_ref = parse_module_ref(&ref_token, mod_sep, tokens)?;
+
+        ref_token.lexeme = amp_lexeme;
+
+        Ok(Node {
+            kind: NodeKind::LabelRef(RefKind::ModuleRef(mod_ref)),
+            token: ref_token,
+        })
+    } else {
+        Ok(Node {
+            kind: NodeKind::LabelRef(RefKind::LocalRef),
+            token: ref_token,
+        })
+    }
 }
 
 fn parse_label<'src>(label_token: Token<'src>) -> Result<Node<'src>> {
