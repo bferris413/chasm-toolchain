@@ -315,7 +315,7 @@ impl Borrow<str> for MemberName {
 }
 
 #[derive(Debug, Default)]
-struct AssemblyModule {
+pub struct AssemblyModule {
     modname: String,
     code: Vec<u8>,
     labels: HashMap<String, usize>,
