@@ -18,13 +18,13 @@ pub fn assemble(args: &AssembleArgs) -> Result<()> {
         .ok_or_else(|| anyhow!("Failed to get filename from '{}'", args.file.display()))
         .map(|file_stem| file_stem.to_string_lossy())?;
 
-    let machine_code = fs::read_to_string(&args.file)
+    let assembly_module = fs::read_to_string(&args.file)
         .with_context(|| format!("Failed to read assembly file '{}'", &args.file.display()))
         .map(|source| source.into())
         .and_then(|s| assemble_source(modname, &s))?;
 
     let outfile = args.file.with_extension("bin");
-    fs::write(&outfile, &machine_code.code)
+    fs::write(&outfile, &assembly_module.code)
         .with_context(|| format!("Failed to write binary file '{}'", outfile.display()))?;
 
     Ok(())
@@ -119,7 +119,7 @@ enum Condition {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum HexLiteral {
+pub enum HexLiteral {
     U32(u32),
     U16(u16),
     U8(u8),
@@ -299,7 +299,7 @@ impl<'src> DerefMut for AssemblyTokens<'src> {
 }
 
 #[derive(Debug, Default, Eq, PartialEq, Hash)]
-struct ModuleName(String);
+pub struct ModuleName(String);
 impl Borrow<str> for ModuleName {
     fn borrow(&self) -> &str {
         self.0.as_str()
@@ -307,7 +307,7 @@ impl Borrow<str> for ModuleName {
 }
 
 #[derive(Debug, Default, Eq, PartialEq, Hash)]
-struct MemberName(String);
+pub struct MemberName(String);
 impl Borrow<str> for MemberName {
     fn borrow(&self) -> &str {
         self.0.as_str()
@@ -316,17 +316,17 @@ impl Borrow<str> for MemberName {
 
 #[derive(Debug, Default)]
 pub struct AssemblyModule {
-    modname: String,
-    code: Vec<u8>,
-    labels: HashMap<String, usize>,
-    definitions: HashMap<String, HexLiteral>,
-    pub_definitions: HashMap<String, HexLiteral>,
-    imports: HashSet<String>,
-    import_refs: HashMap<ModuleName, HashMap<MemberName, Vec<Patch>>>,
+    pub (crate) modname: String,
+    pub (crate) code: Vec<u8>,
+    pub (crate) labels: HashMap<String, usize>,
+    pub (crate) definitions: HashMap<String, HexLiteral>,
+    pub (crate) pub_definitions: HashMap<String, HexLiteral>,
+    pub (crate) imports: HashSet<String>,
+    pub (crate) import_refs: HashMap<ModuleName, HashMap<MemberName, Vec<Patch>>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-enum Patch {
+pub enum Patch {
     Raw(RawPatch),
     Branch(BranchPatch),
     BranchWithLink(BranchWithLinkPatch),
@@ -334,26 +334,26 @@ enum Patch {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct RawPatch {
+pub struct RawPatch {
     offset: usize,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct BranchPatch {
-    offset: usize,
-    reference: String,
-    cond: Option<Condition>,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct BranchWithLinkPatch {
+pub struct BranchPatch {
     offset: usize,
     reference: String,
     cond: Option<Condition>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct ThumbAddrPseudoPatch {
+pub struct BranchWithLinkPatch {
+    offset: usize,
+    reference: String,
+    cond: Option<Condition>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ThumbAddrPseudoPatch {
     offset: usize,
     reference: String,
 }
