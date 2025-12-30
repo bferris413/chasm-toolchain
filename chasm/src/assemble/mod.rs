@@ -106,7 +106,7 @@ enum Instruction {
 enum PseudoInstruction {
     Define    { identifier: String, hex_literal: HexLiteral },
     DefinePub { identifier: String, hex_literal: HexLiteral },
-    Import    { module_name: String },
+    Import    { module_name: ModuleName },
     Mov       { reg: GeneralRegister, hex_literal: HexLiteral },
     PadWithTo { pad_with: u8, pad_to: u32 },
     ThumbAddr { reference: String },
@@ -305,12 +305,22 @@ impl Borrow<str> for ModuleName {
         self.0.as_str()
     }
 }
+impl Display for ModuleName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Debug, Default, Eq, PartialEq, Hash)]
 pub struct MemberName(String);
 impl Borrow<str> for MemberName {
     fn borrow(&self) -> &str {
         self.0.as_str()
+    }
+}
+impl Display for MemberName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -321,7 +331,7 @@ pub struct AssemblyModule {
     pub (crate) labels: HashMap<String, usize>,
     pub (crate) definitions: HashMap<String, HexLiteral>,
     pub (crate) pub_definitions: HashMap<String, HexLiteral>,
-    pub (crate) imports: HashSet<String>,
+    pub (crate) imports: HashSet<ModuleName>,
     pub (crate) import_refs: HashMap<ModuleName, HashMap<MemberName, Vec<Patch>>>,
 }
 
@@ -1363,5 +1373,16 @@ mod tests {
         let usage_patches = member_map.get("SOME-CONST").unwrap();
         let exp_patch = Patch::Raw(RawPatch { offset: 0 });
         assert_eq!(usage_patches[0], exp_patch);
+    }
+
+    #[test]
+    fn import_reference_without_import_returns_err() {
+        let source = AssemblySource::from("
+            &my-mod::SOME-CONST
+        ".to_string());
+
+        let err = assemble_source("test", &source).unwrap_err().to_string();
+
+        assert!(err.contains("Module 'my-mod' has not been imported"), "Err: {}", err);
     }
 }

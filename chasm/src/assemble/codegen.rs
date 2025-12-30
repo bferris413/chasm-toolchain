@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{bail, Result};
 
 use crate::assemble::{
-    AssemblyAst, AssemblyModule, BranchPatch, BranchWithLinkPatch, Condition, GeneralRegister, HexLiteral, Instruction, ModuleRef, NodeKind, Patch, PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind, ThumbAddrPseudoPatch
+    AssemblyAst, AssemblyModule, BranchPatch, BranchWithLinkPatch, Condition, GeneralRegister, HexLiteral, Instruction, ModuleName, ModuleRef, NodeKind, Patch, PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind, ThumbAddrPseudoPatch
 };
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
@@ -70,6 +70,10 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                         }
                     }
                     RefKind::ModuleRef(ModuleRef { module, member, .. }) => {
+                        if ! imports.contains(&module) {
+                            bail!("Module '{}' has not been imported", module.0);
+                        }
+
                         let mod_refs = import_refs.entry(module).or_insert_with(|| HashMap::new());
                         let ref_patches = mod_refs.entry(member).or_insert_with(|| Vec::new());
 
@@ -177,7 +181,7 @@ fn generate_pseudo_instruction(
     unresolved_refs: &mut HashMap<String, Vec<Patch>>,
     definitions: &mut HashMap<String, HexLiteral>,
     pub_definitions: &mut HashMap<String, HexLiteral>,
-    imports: &mut HashSet<String>,
+    imports: &mut HashSet<ModuleName>,
 ) -> Result<()> {
     match pseudo {
         PseudoInstruction::Define { identifier, hex_literal } => {
@@ -460,7 +464,7 @@ fn generate_instruction(
     Ok(())
 }
 
-fn generate_import(module_name: String, imports: &mut HashSet<String>) -> Result<()> {
+fn generate_import(module_name: ModuleName, imports: &mut HashSet<ModuleName>) -> Result<()> {
     if imports.contains(&module_name) {
         bail!("Duplicate import for module '{module_name}'");
     } else {

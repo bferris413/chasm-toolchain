@@ -273,8 +273,9 @@ fn parse_import_pseudo<'src>(import_token: Token<'src>, tokens: &mut dyn Iterato
     let module_name_token = next_symbol_token_as(&[TokenKind::Identifier], "module name", &lparen, tokens)?;
     let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &module_name_token, tokens)?;
 
+    let module_name = ModuleName(module_name_token.lexeme.to_string());
     let node = Node {
-        kind: NodeKind::PseudoInstruction(PseudoInstruction::Import { module_name: module_name_token.lexeme.to_string() }),
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::Import { module_name }),
         token: import_token,
     };
 
