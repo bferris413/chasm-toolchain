@@ -78,10 +78,25 @@ enum RefKind {
     LocalRef
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 struct ModuleRef {
     module: ModuleName,
     member: MemberName,
+}
+
+/// An offset from the start of an assembly module's code (i.e. from 0).
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+pub struct BaseOffset(usize);
+impl Deref for BaseOffset {
+    type Target = usize;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl From<usize> for BaseOffset {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
 }
 
 #[derive(Debug)]
@@ -97,9 +112,9 @@ enum Instruction {
     Movt { dest: GeneralRegister, value: HexLiteral },
     Movw { dest: GeneralRegister, value: HexLiteral },
     Orrs { dest: GeneralRegister, src: GeneralRegister },
-    Pop { registers: HashSet<PoppableRegister> },
+    Pop  { registers: HashSet<PoppableRegister> },
     Push { registers: HashSet<PushableRegister> },
-    Str { dest_addr_reg: GeneralRegister, src: GeneralRegister },
+    Str  { dest_addr_reg: GeneralRegister, src: GeneralRegister },
 }
 
 #[derive(Debug)]
@@ -108,7 +123,7 @@ enum PseudoInstruction {
     DefinePub { identifier: String, hex_literal: HexLiteral },
     Import    { module_name: ModuleName },
     Mov       { reg: GeneralRegister, hex_literal: HexLiteral },
-    PadWithTo { pad_with: u8, pad_to: u32 },
+    PadWithTo { pad_with: u8, pad_to: BaseOffset },
     ThumbAddr { reference: String },
 }
 
@@ -202,15 +217,6 @@ enum PoppableRegister {
     LR,
     PC,
 }
-impl PoppableRegister {
-    fn to_u8(&self) -> u8 {
-        match self {
-            PoppableRegister::General(gen_reg) => *gen_reg as u8,
-            PoppableRegister::LR => 14,
-            PoppableRegister::PC => 14,
-        }
-    }
-}
 
 impl TryFrom<Register> for PoppableRegister {
     type Error = Error;
@@ -231,14 +237,6 @@ impl TryFrom<Register> for PoppableRegister {
 enum PushableRegister {
     General(GeneralRegister),
     LR,
-}
-impl PushableRegister {
-    fn to_u8(&self) -> u8 {
-        match self {
-            PushableRegister::General(gen_reg) => *gen_reg as u8,
-            PushableRegister::LR => 14,
-        }
-    }
 }
 
 impl TryFrom<Register> for PushableRegister {
@@ -328,43 +326,95 @@ impl Display for MemberName {
 pub struct AssemblyModule {
     pub (crate) modname: String,
     pub (crate) code: Vec<u8>,
-    pub (crate) labels: HashMap<String, usize>,
+    pub (crate) labels: HashMap<String, BaseOffset>,
     pub (crate) definitions: HashMap<String, HexLiteral>,
     pub (crate) pub_definitions: HashMap<String, HexLiteral>,
     pub (crate) imports: HashSet<ModuleName>,
-    pub (crate) import_refs: HashMap<ModuleName, HashMap<MemberName, Vec<Patch>>>,
+    pub (crate) linker_patches: Vec<LinkerPatch>,
+}
+
+/// A patch to be applied by the linker.
+#[derive(Debug, Eq, PartialEq)]
+pub enum LinkerPatch {
+    NewOffset(OffsetPatch),
+    Import(ImportPatch),
+    BranchWithNewOffset(BranchPatch),
+    BranchLinkWithNewOffset(BranchWithLinkPatch),
+    ThumbAddrPseudoWithNewOffset(ThumbAddrPseudoPatch),
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum Patch {
+pub struct OffsetPatch {
+    /// Where in the module's code the patch should be applied.
+    patch_at: BaseOffset,
+    /// The number of bytes to patch.
+    patch_size: PatchSize,
+    /// The unpatched value at the patch location.
+    /// 
+    /// This value will be added to the new starting offset in memory.
+    unpatched_value: usize,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ImportPatch {
+    /// Where in the module's code the patch should be applied.
+    patch_at: BaseOffset,
+    /// The number of bytes to patch.
+    patch_size: PatchSize,
+    /// Module to import the patch value from.
+    import_module: ModuleRef,
+}
+
+/// Number of bytes to overwrite in a patch.
+#[derive(Debug, Eq, PartialEq)]
+enum PatchSize {
+    U8,
+    U16,
+    U32,
+    U64
+}
+
+/// A patch to be applied by the assembler.
+//
+// These are expected to be removed, eventually, since the linker must overwrite
+// them anyways, but there's a bunch of tests that verify codegen using these
+// patches, so they remain for now.
+#[derive(Debug, Eq, PartialEq)]
+pub enum AssemblerPatch {
+    /// An in-place overwrite of raw bytes at a given offset.
     Raw(RawPatch),
+    /// A patch that regenerates a branch instruction.
     Branch(BranchPatch),
+    /// A patch that regenerates a branch with link instruction.
     BranchWithLink(BranchWithLinkPatch),
+    /// A patch that recomputes a thumb address pseudo-instruction.
     ThumbAddrPseudo(ThumbAddrPseudoPatch),
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct RawPatch {
-    offset: usize,
+    /// Where in the module's code the patch should be applied.
+    patch_at: BaseOffset,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct BranchPatch {
-    offset: usize,
+    /// Where in the module's code the patch should be applied.
+    patch_at: BaseOffset,
     reference: String,
     cond: Option<Condition>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct BranchWithLinkPatch {
-    offset: usize,
+    patch_at: BaseOffset,
     reference: String,
     cond: Option<Condition>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ThumbAddrPseudoPatch {
-    offset: usize,
+    patch_at: BaseOffset,
     reference: String,
 }
 
@@ -637,7 +687,7 @@ mod tests {
 
         let machine_code = assemble_source("test", &source).unwrap();
 
-        assert_eq!(machine_code.labels.get("label"), Some(&2));
+        assert_eq!(machine_code.labels.get("label"), Some(&BaseOffset(2)));
     }
 
     #[test]
@@ -667,8 +717,8 @@ mod tests {
 
         let machine_code = assemble_source("test", &source).unwrap();
 
-        assert_eq!(machine_code.labels.get("label"), Some(&2));
-        assert_eq!(machine_code.labels.get("loop"), Some(&4));
+        assert_eq!(machine_code.labels.get("label"), Some(&BaseOffset(2)));
+        assert_eq!(machine_code.labels.get("loop"), Some(&BaseOffset(4)));
     }
 
     #[test]
@@ -1361,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn import_reference_creates_import_ref_in_module() {
+    fn import_reference_creates_linker_patch_in_module() {
         let source = AssemblySource::from("
             import!(my-mod)
             &my-mod::SOME-CONST
@@ -1369,10 +1419,17 @@ mod tests {
 
         let module = assemble_source("test", &source).unwrap();
 
-        let member_map = module.import_refs.get("my-mod").unwrap();
-        let usage_patches = member_map.get("SOME-CONST").unwrap();
-        let exp_patch = Patch::Raw(RawPatch { offset: 0 });
-        assert_eq!(usage_patches[0], exp_patch);
+        let exp_patch = LinkerPatch::Import(ImportPatch {
+            patch_at: BaseOffset(0),
+            patch_size: PatchSize::U32,
+            import_module: ModuleRef {
+                module: ModuleName("my-mod".to_string()),
+                member: MemberName("SOME-CONST".to_string())
+            }
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
     }
 
     #[test]
@@ -1384,5 +1441,149 @@ mod tests {
         let err = assemble_source("test", &source).unwrap_err().to_string();
 
         assert!(err.contains("Module 'my-mod' has not been imported"), "Err: {}", err);
+    }
+
+    #[test]
+    fn label_ref_with_label_adds_linker_patch() {
+        let source = AssemblySource::from("
+            x1111.1111
+            @start
+            x2222.2222
+            &start
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        let exp_patch = LinkerPatch::NewOffset(OffsetPatch {
+            patch_at: BaseOffset(8),
+            patch_size: PatchSize::U32,
+            unpatched_value: 4,
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
+    }
+
+    #[test]
+    fn raw_forward_label_ref_adds_linker_patch() {
+        let source = AssemblySource::from("
+            &start
+            x1111.1111
+            x2222.2222
+            @start
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        let exp_patch = LinkerPatch::NewOffset(OffsetPatch {
+            patch_at: BaseOffset(0),
+            patch_size: PatchSize::U32,
+            unpatched_value: 12,
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
+    }
+
+    #[test]
+    fn branch_patch_with_forward_ref_adds_linker_patch() {
+        let source = AssemblySource::from("
+            B &start
+            x1111.1111
+            x2222.2222
+            @start
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        let exp_patch = LinkerPatch::BranchWithNewOffset(BranchPatch {
+            patch_at: BaseOffset(0),
+            reference: "&start".to_string(),
+            cond: None,
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
+    }
+
+    #[test]
+    fn branch_with_link_patch_with_forward_ref_adds_linker_patch() {
+        let source = AssemblySource::from("
+            BL &start
+            x1111.1111
+            x2222.2222
+            @start
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        let exp_patch = LinkerPatch::BranchLinkWithNewOffset(BranchWithLinkPatch {
+            patch_at: BaseOffset(0),
+            reference: "&start".to_string(),
+            cond: None
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
+    }
+
+    #[test]
+    fn thumb_addr_pseudo_patch_with_forward_ref_adds_linker_patch() {
+        let source = AssemblySource::from("
+            thumb-addr!(&start)
+            x1111.1111
+            @start
+            x2222.2222
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        let exp_patch = LinkerPatch::ThumbAddrPseudoWithNewOffset(ThumbAddrPseudoPatch {
+            patch_at: BaseOffset(0),
+            reference: "&start".to_string(),
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
+    }
+
+    #[test]
+    fn branch_to_label_adds_linker_patch() {
+        let source = AssemblySource::from("
+            MOVS R0 x01
+            @loop
+                ADDS R0 x01
+                B &loop
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        let exp_patch = LinkerPatch::BranchWithNewOffset(BranchPatch {
+            patch_at: BaseOffset(4),
+            reference: "&loop".to_string(),
+            cond: None,
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
+    }
+
+    #[test]
+    fn branch_with_link_to_label_adds_linker_patch() {
+        let source = AssemblySource::from("
+            @myfunc
+            BL &myfunc
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        let exp_patch = LinkerPatch::BranchLinkWithNewOffset(BranchWithLinkPatch {
+            patch_at: BaseOffset(0),
+            reference: "&myfunc".to_string(),
+            cond: None,
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
     }
 }

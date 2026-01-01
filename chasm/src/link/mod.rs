@@ -5,8 +5,13 @@ const LINK_ERR: &str = "Link error:";
 
 pub fn link(mut modules: Vec<AssemblyModule>) -> Result<Binary> {
     let main_i = main_module_index(&modules).map_err(|e| anyhow!("{LINK_ERR} {e}"))?;
-    let bin = modules.swap_remove(main_i).code;
-    Ok(Binary(bin))
+    let mut main_bin = modules.swap_remove(main_i).code;
+
+    for module in modules {
+        main_bin.extend(module.code);
+    }
+
+    Ok(Binary(main_bin))
 }
 
 /// Returns the index of the main module.
@@ -60,15 +65,21 @@ mod tests {
     }    
 
     #[test]
-    fn module_list_with_single_main_is_ok() {
+    fn module_list_with_single_main_and_only_code_is_linked() {
         let modules = vec![
-            AssemblyModule { modname: "main".to_string(), ..Default::default() },
-            AssemblyModule { modname: "mylib2".to_string(), ..Default::default() },
-            AssemblyModule { modname: "mylib3".to_string(), ..Default::default() },
+            AssemblyModule { modname: "main".to_string(), code: vec![0x00, 0x00], ..Default::default() },
+            AssemblyModule { modname: "mylib2".to_string(), code: vec![0x11, 0x11], ..Default::default() },
+            AssemblyModule { modname: "mylib3".to_string(), code: vec![0x22, 0x22], ..Default::default() },
         ];
 
-        let link_res = link(modules);
+        let linked_bin = link(modules).unwrap();
 
-        assert!(link_res.is_ok(), "{:?}", link_res);
+        assert_eq!(linked_bin.0.len(), 6);
+        assert_eq!(&linked_bin.0[0..2], &[0x00, 0x00]);
+        assert!(
+            &linked_bin.0[2..6] == &[0x11, 0x11, 0x22, 0x22]
+            ||
+            &linked_bin.0[2..6] == &[0x22, 0x22, 0x11, 0x11]
+        );
     }    
 }

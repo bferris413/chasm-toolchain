@@ -2,40 +2,44 @@
 //! 
 //! ARMv7 generated using https://developer.arm.com/documentation/ddi0403/ee.
 
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, ops::Deref};
 
 use anyhow::{bail, Result};
 
 use crate::assemble::{
-    AssemblyAst, AssemblyModule, BranchPatch, BranchWithLinkPatch, Condition, GeneralRegister, HexLiteral, Instruction, ModuleName, ModuleRef, NodeKind, Patch, PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind, ThumbAddrPseudoPatch
+    AssemblerPatch, AssemblyAst, AssemblyModule, BaseOffset, BranchPatch,
+    BranchWithLinkPatch, Condition, GeneralRegister, HexLiteral, ImportPatch,
+    Instruction, LinkerPatch, ModuleName, NodeKind, OffsetPatch, PatchSize,
+    PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind,
+    ThumbAddrPseudoPatch
 };
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
 
 pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<AssemblyModule> {
-    let mut code_bytes = Vec::new();
+    let mut code = Vec::new();
     let mut labels = HashMap::new();
-    let mut unresolved_refs = HashMap::new();
+    let mut local_patches = HashMap::new();
     let mut definitions = HashMap::new();
     let mut pub_definitions = HashMap::new();
     let mut imports = HashSet::new();
-    let mut import_refs = HashMap::new();
+    let mut linker_patches = Vec::new();
 
     // generate valid code and collect forward refs
     for node in ast.nodes.into_iter() {
         match node.kind {
             NodeKind::HexLiteral(lit) => {
-                generate_hex_literal(&lit, &mut code_bytes);
+                generate_hex_literal(&lit, &mut code);
             }
             NodeKind::Instruction(instr) => {
-                generate_instruction(&instr, &mut code_bytes, &labels, &mut unresolved_refs)?;
+                generate_instruction(&instr, &mut code, &labels, &mut local_patches, &mut linker_patches)?;
             }
             NodeKind::PseudoInstruction(instr) => {
                 generate_pseudo_instruction(
                     instr,
-                    &mut code_bytes,
+                    &mut code,
                     &labels,
-                    &mut unresolved_refs,
+                    &mut local_patches,
                     &mut definitions,
                     &mut pub_definitions,
                     &mut imports
@@ -45,49 +49,61 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                 let label = &node.token.lexeme[1..]; // strip '@'
 
                 if let Some(old_addr) = labels.get(label) {
-                    bail!("Duplicate label '{label}', old address is {old_addr:02X}, new address is {:02X}", code_bytes.len());
+                    bail!("Duplicate label '{label}', old address is {:02X}, new address is {:02X}", old_addr.deref(), code.len());
                 }
 
-                labels.insert(label.to_string(), code_bytes.len());
+                labels.insert(label.to_string(), BaseOffset(code.len()));
             }
             NodeKind::LabelRef(ref_kind) => {
                 match ref_kind {
                     RefKind::LocalRef => {
                         let reference = &node.token.lexeme[1..]; // strip '&'
                         match labels.get(reference) {
-                            Some(&addr) => generate_ref(addr as u32, &mut code_bytes),
+                            Some(&addr) => {
+                                let patch = LinkerPatch::NewOffset(OffsetPatch {
+                                    patch_at: code.len().into(),
+                                    patch_size: PatchSize::U32,
+                                    unpatched_value: *addr,
+                                });
+                                linker_patches.push(patch);
+                                generate_ref(*addr as u32, &mut code);
+                            }
                             None => {
-                                let patch = Patch::Raw(RawPatch { offset: code_bytes.len() });
-                                match unresolved_refs.get_mut(reference) {
+                                // We won't emit a linker patch until we know if the label is present in the module or not
+                                let patch = AssemblerPatch::Raw(RawPatch { patch_at: code.len().into() });
+                                match local_patches.get_mut(reference) {
                                     Some(patches) => patches.push(patch),
                                     None => {
-                                        unresolved_refs.insert(reference.to_string(), vec![patch]);
+                                        local_patches.insert(reference.to_string(), vec![patch]);
                                     }
                                 }
 
-                                generate_ref(REF_PLACEHOLDER, &mut code_bytes);
+                                generate_ref(REF_PLACEHOLDER, &mut code);
                             }
                         }
                     }
-                    RefKind::ModuleRef(ModuleRef { module, member, .. }) => {
-                        if ! imports.contains(&module) {
-                            bail!("Module '{}' has not been imported", module.0);
+                    RefKind::ModuleRef(module_ref) => {
+                        if ! imports.contains(&module_ref.module) {
+                            bail!("Module '{}' has not been imported", module_ref.module.0);
                         }
 
-                        let mod_refs = import_refs.entry(module).or_insert_with(|| HashMap::new());
-                        let ref_patches = mod_refs.entry(member).or_insert_with(|| Vec::new());
+                        let patch = LinkerPatch::Import(ImportPatch {
+                            patch_at: code.len().into(),
+                            patch_size: PatchSize::U32,
+                            import_module: module_ref,
+                        });
 
-                        let patch = Patch::Raw(RawPatch { offset: code_bytes.len() });
-                        ref_patches.push(patch);
-                        generate_ref(REF_PLACEHOLDER, &mut code_bytes);
+                        linker_patches.push(patch);
+                        generate_ref(REF_PLACEHOLDER, &mut code);
                     }
                 }
             }
             NodeKind::DefinedRef => {
                 let reference = &node.token.lexeme[1..]; // strip '$'
                 match definitions.get(reference) {
-                    Some(&hex_lit) => generate_hex_literal(&hex_lit, &mut code_bytes),
+                    Some(&hex_lit) => generate_hex_literal(&hex_lit, &mut code),
                     None => {
+                        // No patch for these, we assume they're at the beginning of the module for now
                         bail!("Undefined definition '{reference}'");
                     }
                 }
@@ -97,21 +113,27 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
     }
 
     // resolve forward refs and patch binary
-    for (r, patches) in unresolved_refs.iter_mut() {
-        let target_addr = match labels.get(r) {
-            Some(&addr) => addr as u32,
+    for (r, patches) in local_patches.into_iter() {
+        let target_addr = match labels.get(&r) {
+            Some(&addr) => *addr as u32,
             None => bail!("Undefined reference '&{r}'"),
         };
 
-        for patch in patches.iter() {
+        for patch in patches {
             match patch {
-                Patch::Raw(raw_patch) => {
-                    let place = raw_patch.offset;
+                AssemblerPatch::Raw(raw_patch) => {
+                    let place = raw_patch.patch_at;
                     let bytes = target_addr.to_le_bytes();
-                    code_bytes[place..place + 4].copy_from_slice(&bytes);
+                    code[*place..*place + 4].copy_from_slice(&bytes);
+
+                    linker_patches.push(LinkerPatch::NewOffset(OffsetPatch {
+                        patch_at: place,
+                        patch_size: PatchSize::U32,
+                        unpatched_value: target_addr as usize,
+                    }));
                 }
-                Patch::Branch(branch_patch) => {
-                    let place = branch_patch.offset;
+                AssemblerPatch::Branch(branch_patch) => {
+                    let place = branch_patch.patch_at;
                     let mut branch_bytes = Vec::new();
 
                     generate_branch(
@@ -123,10 +145,11 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                         Some(place),
                     )?;
 
-                    code_bytes[place..place + branch_bytes.len()].copy_from_slice(&branch_bytes);
+                    code[*place..*place + branch_bytes.len()].copy_from_slice(&branch_bytes);
+                    linker_patches.push(LinkerPatch::BranchWithNewOffset(branch_patch));
                 }
-                Patch::BranchWithLink(branch_patch) => {
-                    let place = branch_patch.offset;
+                AssemblerPatch::BranchWithLink(branch_patch) => {
+                    let place = branch_patch.patch_at;
                     let mut branch_bytes = Vec::new();
 
                     generate_branch_with_link(
@@ -138,10 +161,11 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                         Some(place),
                     )?;
 
-                    code_bytes[place..place + branch_bytes.len()].copy_from_slice(&branch_bytes);
+                    code[*place..*place + branch_bytes.len()].copy_from_slice(&branch_bytes);
+                    linker_patches.push(LinkerPatch::BranchLinkWithNewOffset(branch_patch));
                 }
-                Patch::ThumbAddrPseudo(thumb_patch) => {
-                    let place = thumb_patch.offset;
+                AssemblerPatch::ThumbAddrPseudo(thumb_patch) => {
+                    let place = thumb_patch.patch_at;
                     let mut thumb_bytes = Vec::new();
 
                     generate_thumb_addr_pseudo(
@@ -152,14 +176,15 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                         Some(place),
                     )?;
 
-                    code_bytes[place..place + thumb_bytes.len()].copy_from_slice(&thumb_bytes);
+                    code[*place..*place + thumb_bytes.len()].copy_from_slice(&thumb_bytes);
+                    linker_patches.push(LinkerPatch::ThumbAddrPseudoWithNewOffset(thumb_patch));
                 }
             }
         }
     }
 
     let modname = modname.as_ref().to_string();
-    Ok(AssemblyModule { modname, code: code_bytes, labels, definitions, imports, pub_definitions, import_refs })
+    Ok(AssemblyModule { modname, code, labels, definitions, imports, pub_definitions, linker_patches })
 }
 
 fn generate_hex_literal(lit: &HexLiteral, output: &mut Vec<u8>) {
@@ -177,8 +202,8 @@ fn generate_ref(addr: u32, output: &mut Vec<u8>) {
 fn generate_pseudo_instruction(
     pseudo: PseudoInstruction,
     output: &mut Vec<u8>,
-    labels: &HashMap<String, usize>,
-    unresolved_refs: &mut HashMap<String, Vec<Patch>>,
+    labels: &HashMap<String, BaseOffset>,
+    unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
     definitions: &mut HashMap<String, HexLiteral>,
     pub_definitions: &mut HashMap<String, HexLiteral>,
     imports: &mut HashSet<ModuleName>,
@@ -213,8 +238,9 @@ fn generate_pseudo_instruction(
 fn generate_instruction(
     instr: &Instruction,
     output: &mut Vec<u8>,
-    labels: &HashMap<String, usize>,
-    unresolved_refs: &mut HashMap<String, Vec<Patch>>,
+    labels: &HashMap<String, BaseOffset>,
+    unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
+    linker_patches: &mut Vec<LinkerPatch>,
 ) -> Result<()> {
     if output.len() % 2 != 0 {
         bail!("Attempted to generate unaligned {instr:?} at {:02X}", output.len());
@@ -444,12 +470,30 @@ fn generate_instruction(
         // A7.7.12 B
         Instruction::Branch { reference, cond } => {
             let not_as_patch = None;
-            generate_branch(reference, cond, output, labels, unresolved_refs, not_as_patch)?;
+            let branch_instr_addr = output.len();
+            let should_linker_patch = generate_branch(reference, cond, output, labels, unresolved_refs, not_as_patch)?;
+            if should_linker_patch {
+                let patch = LinkerPatch::BranchWithNewOffset(BranchPatch {
+                    patch_at: BaseOffset(branch_instr_addr),
+                    reference: reference.to_string(),
+                    cond: *cond,
+                });
+                linker_patches.push(patch);
+            }
         }
         // A7.7.18 BL
         Instruction::BranchWithLink { reference, cond } => {
             let not_as_patch = None;
-            generate_branch_with_link(reference, cond, output, labels, unresolved_refs, not_as_patch)?;
+            let branch_instr_addr = output.len();
+            let should_linker_patch = generate_branch_with_link(reference, cond, output, labels, unresolved_refs, not_as_patch)?;
+            if should_linker_patch {
+                let patch = LinkerPatch::BranchLinkWithNewOffset(BranchWithLinkPatch {
+                    patch_at: BaseOffset(branch_instr_addr),
+                    reference: reference.to_string(),
+                    cond: *cond,
+                });
+                linker_patches.push(patch);
+            }
         }
         // A7.7.20 BX
         Instruction::BranchExchange { branch_reg } => {
@@ -492,8 +536,9 @@ fn generate_mov(
                 value: HexLiteral::U16(imm16_high),
             };
 
-            generate_instruction(&movw_instr, output, &HashMap::new(), &mut HashMap::new())?;
-            generate_instruction(&movt_instr, output, &HashMap::new(), &mut HashMap::new())
+            // None of the label/patch references are used
+            generate_instruction(&movw_instr, output, &HashMap::new(), &mut HashMap::new(), &mut Vec::new())?;
+            generate_instruction(&movt_instr, output, &HashMap::new(), &mut HashMap::new(), &mut Vec::new())
         }
         v @ HexLiteral::U16(..) => {
             let movw_instr = Instruction::Movw {
@@ -501,7 +546,8 @@ fn generate_mov(
                 value: v,
             };
 
-            generate_instruction(&movw_instr, output, &HashMap::new(), &mut HashMap::new())
+            // None of the label/patch references are used
+            generate_instruction(&movw_instr, output, &HashMap::new(), &mut HashMap::new(), &mut Vec::new())
         },
         v @ HexLiteral::U8(..) => {
             let movs_instr = Instruction::Movs {
@@ -509,7 +555,8 @@ fn generate_mov(
                 value: v,
             };
 
-            generate_instruction(&movs_instr, output, &HashMap::new(), &mut HashMap::new())
+            // None of the label/patch references are used
+            generate_instruction(&movs_instr, output, &HashMap::new(), &mut HashMap::new(), &mut Vec::new())
         },
     }
 
@@ -550,9 +597,9 @@ fn generate_define(
 fn generate_thumb_addr_pseudo(
     reference: &str,
     output: &mut Vec<u8>,
-    labels: &HashMap<String, usize>,
-    unresolved_refs: &mut HashMap<String, Vec<Patch>>,
-    patch_offset: Option<usize>,
+    labels: &HashMap<String, BaseOffset>,
+    unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
+    patch_offset: Option<BaseOffset>,
 ) -> Result<()> {
     let target_addr = match labels.get(&reference[1..]) {
         Some(addr) => *addr,
@@ -563,8 +610,8 @@ fn generate_thumb_addr_pseudo(
             }
 
             // forward reference - store the info and use a dummy target to be patched later
-            let patch = Patch::ThumbAddrPseudo(ThumbAddrPseudoPatch {
-                offset: output.len(),
+            let patch = AssemblerPatch::ThumbAddrPseudo(ThumbAddrPseudoPatch {
+                patch_at: output.len().into(),
                 reference: reference.to_string(),
             });
 
@@ -576,31 +623,31 @@ fn generate_thumb_addr_pseudo(
                 }
             }
 
-            REF_PLACEHOLDER as usize
+            BaseOffset(REF_PLACEHOLDER as usize)
         }
     };
 
-    let target_as_thumb_addr = target_addr | 0x01;
+    let target_as_thumb_addr = *target_addr | 0x01;
     output.extend(&(target_as_thumb_addr as u32).to_le_bytes());
     Ok(())
 }
 
 fn generate_pad_with_to(
     pad_with: u8,
-    pad_to: u32,
+    pad_to: BaseOffset,
     output: &mut Vec<u8>,
 
     // Unused now, but we'll likely allow padding to label addresses in the near future,
     // which implies reference lookups and patching.
-    _labels: &HashMap<String, usize>,
-    _unresolved_refs: &mut HashMap<String, Vec<Patch>>,
-    _patch_offset: Option<usize>,
+    _labels: &HashMap<String, BaseOffset>,
+    _unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
+    _patch_offset: Option<BaseOffset>,
 ) -> Result<()> {
-    if output.len() > pad_to as usize {
-        bail!("Cannot pad to {pad_to:08X}, target address is behind current address {:016X}", output.len());
+    if output.len() > *pad_to as usize {
+        bail!("Cannot pad to {:08X}, target address is behind current address {:016X}", *pad_to, output.len());
     }
 
-    let bytes_needed = pad_to as usize - output.len();
+    let bytes_needed = *pad_to as usize - output.len();
     output.extend(vec![pad_with; bytes_needed]);
 
     Ok(())
@@ -609,16 +656,21 @@ fn generate_branch_with_link(
     reference: &str,
     cond: &Option<Condition>,
     output: &mut Vec<u8>,
-    labels: &HashMap<String, usize>,
-    unresolved_refs: &mut HashMap<String, Vec<Patch>>,
-    patch_offset: Option<usize>,
-) -> Result<()> {
+    labels: &HashMap<String, BaseOffset>,
+    unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
+    patch_offset: Option<BaseOffset>,
+) -> Result<bool> {
     // Cortex-M4F PC is 4 bytes ahead of the branch instruction
     let instr_pc = patch_offset.as_ref()
-        .map_or_else(|| output.len() + 4, |offset| offset + 4);
+        .map_or_else(|| output.len() + 4, |offset| **offset + 4);
+
+    let mut should_linker_patch = false;
 
     let target_addr = match labels.get(&reference[1..]) {
-        Some(addr) => *addr,
+        Some(addr) => {
+            should_linker_patch = true;
+            *addr
+        }
         None => {
             if patch_offset.is_some() {
                 // we're expected to be patching - if the label isn't present now then it never will be
@@ -626,8 +678,8 @@ fn generate_branch_with_link(
             }
 
             // forward reference - store the info and use a dummy target to be patched later
-            let patch = Patch::BranchWithLink(BranchWithLinkPatch {
-                offset: output.len(),
+            let patch = AssemblerPatch::BranchWithLink(BranchWithLinkPatch {
+                patch_at: BaseOffset(output.len()),
                 reference: reference.to_string(),
                 cond: *cond,
             });
@@ -640,13 +692,13 @@ fn generate_branch_with_link(
                 }
             }
 
-            output.len() + 4
+            BaseOffset(output.len() + 4)
         }
     };
 
-    let offset_bytes = target_addr as isize - instr_pc as isize;
+    let offset_bytes = *target_addr as isize - instr_pc as isize;
     if offset_bytes % 2 != 0 {
-        bail!("Branch target address must be halfword-aligned, but label at '{reference}' is at byte address {target_addr:02X}");
+        bail!("Branch target address must be halfword-aligned, but label at '{reference}' is at byte address {:02X}", *target_addr);
     }
 
     match cond {
@@ -682,23 +734,28 @@ fn generate_branch_with_link(
         }
     }
 
-    Ok(())
+    Ok(should_linker_patch)
 }
 
 fn generate_branch(
     reference: &str,
     cond: &Option<Condition>,
     output: &mut Vec<u8>,
-    labels: &HashMap<String, usize>,
-    unresolved_refs: &mut HashMap<String, Vec<Patch>>,
-    patch_offset: Option<usize>,
-) -> Result<()> {
+    labels: &HashMap<String, BaseOffset>,
+    unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
+    patch_offset: Option<BaseOffset>,
+) -> Result<bool> {
     // Cortex-M4F PC is 4 bytes ahead of the branch instruction
     let instr_pc = patch_offset.as_ref()
-        .map_or_else(|| output.len() + 4, |offset| offset + 4);
+        .map_or_else(|| output.len() + 4, |offset| **offset + 4);
+
+    let mut should_linker_patch = false;
 
     let target_addr = match labels.get(&reference[1..]) {
-        Some(addr) => *addr,
+        Some(addr) => {
+            should_linker_patch = true;
+            *addr
+        }
         None => {
             if patch_offset.is_some() {
                 // we're expected to be patching - if the label isn't present now then it never will be
@@ -706,8 +763,8 @@ fn generate_branch(
             }
 
             // forward reference - store the info and use a dummy target to be patched later
-            let patch = Patch::Branch(BranchPatch {
-                offset: output.len(),
+            let patch = AssemblerPatch::Branch(BranchPatch {
+                patch_at: BaseOffset(output.len()),
                 reference: reference.to_string(),
                 cond: *cond,
             });
@@ -720,13 +777,13 @@ fn generate_branch(
                 }
             }
 
-            output.len() + 4
+            BaseOffset(output.len() + 4)
         }
     };
 
-    let offset_bytes = target_addr as isize - instr_pc as isize;
+    let offset_bytes = *target_addr as isize - instr_pc as isize;
     if offset_bytes % 2 != 0 {
-        bail!("Branch target address must be halfword-aligned, but label at '{reference}' is at byte address {target_addr:02X}");
+        bail!("Branch target address must be halfword-aligned, but label at '{reference}' is at byte address {:02X}", *target_addr);
     }
 
     let offset_halfwords = offset_bytes / 2;
@@ -756,5 +813,5 @@ fn generate_branch(
         }
     }
 
-    Ok(())
+    Ok(should_linker_patch)
 }

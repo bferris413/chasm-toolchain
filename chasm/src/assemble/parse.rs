@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
 use crate::assemble::{
-    AssemblyAst, AssemblyError, AssemblyTokens, BranchableRegister, Condition, GeneralRegister, HexLiteral, Instruction, MemberName, ModuleName, ModuleRef, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, RefKind, Register, Token, TokenKind
+    AssemblyAst, AssemblyError, AssemblyTokens, BaseOffset, BranchableRegister, Condition, GeneralRegister, HexLiteral, Instruction, MemberName, ModuleName, ModuleRef, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, RefKind, Register, Token, TokenKind
 };
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
@@ -314,7 +314,7 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
 
     let pad_to_u32 = parse_hex_literal_u32(maybe_4_byte_literal);
     let pad_to = match pad_to_u32.kind {
-        NodeKind::HexLiteral(HexLiteral::U32(bytes)) => bytes,
+        NodeKind::HexLiteral(HexLiteral::U32(bytes)) => BaseOffset(bytes as usize),
         _ => unreachable!(),
     };
 
