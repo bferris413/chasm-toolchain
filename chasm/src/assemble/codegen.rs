@@ -9,7 +9,7 @@ use anyhow::{bail, Result};
 use crate::assemble::{
     AssemblerPatch, AssemblyAst, AssemblyModule, BaseOffset, BranchPatch,
     BranchWithLinkPatch, Condition, GeneralRegister, HexLiteral, ImportPatch,
-    Instruction, LinkerPatch, ModuleName, NodeKind, OffsetPatch, PatchSize,
+    Instruction, LinkerPatch, ModuleName, NodeKind, LabelNewOffsetPatch, PatchSize,
     PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind,
     ThumbAddrPseudoPatch
 };
@@ -25,7 +25,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
     let mut imports = HashSet::new();
     let mut linker_patches = Vec::new();
 
-    // generate valid code and collect forward refs
+    // generate valid code
     for node in ast.nodes.into_iter() {
         match node.kind {
             NodeKind::HexLiteral(lit) => {
@@ -60,7 +60,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                         let reference = &node.token.lexeme[1..]; // strip '&'
                         match labels.get(reference) {
                             Some(&addr) => {
-                                let patch = LinkerPatch::NewOffset(OffsetPatch {
+                                let patch = LinkerPatch::LabelNewOffset(LabelNewOffsetPatch {
                                     patch_at: code.len().into(),
                                     patch_size: PatchSize::U32,
                                     unpatched_value: *addr,
@@ -112,7 +112,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
         }
     }
 
-    // resolve forward refs and patch binary
+    // resolve forward references and do local patches
     for (r, patches) in local_patches.into_iter() {
         let target_addr = match labels.get(&r) {
             Some(&addr) => *addr as u32,
@@ -126,7 +126,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                     let bytes = target_addr.to_le_bytes();
                     code[*place..*place + 4].copy_from_slice(&bytes);
 
-                    linker_patches.push(LinkerPatch::NewOffset(OffsetPatch {
+                    linker_patches.push(LinkerPatch::LabelNewOffset(LabelNewOffsetPatch {
                         patch_at: place,
                         patch_size: PatchSize::U32,
                         unpatched_value: target_addr as usize,

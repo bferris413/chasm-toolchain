@@ -86,7 +86,7 @@ struct ModuleRef {
 
 /// An offset from the start of an assembly module's code (i.e. from 0).
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
-pub struct BaseOffset(usize);
+pub struct BaseOffset(pub usize);
 impl Deref for BaseOffset {
     type Target = usize;
     fn deref(&self) -> &Self::Target {
@@ -336,7 +336,7 @@ pub struct AssemblyModule {
 /// A patch to be applied by the linker.
 #[derive(Debug, Eq, PartialEq)]
 pub enum LinkerPatch {
-    NewOffset(OffsetPatch),
+    LabelNewOffset(LabelNewOffsetPatch),
     Import(ImportPatch),
     BranchWithNewOffset(BranchPatch),
     BranchLinkWithNewOffset(BranchWithLinkPatch),
@@ -344,15 +344,15 @@ pub enum LinkerPatch {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct OffsetPatch {
+pub struct LabelNewOffsetPatch {
     /// Where in the module's code the patch should be applied.
-    patch_at: BaseOffset,
+    pub patch_at: BaseOffset,
     /// The number of bytes to patch.
-    patch_size: PatchSize,
+    pub patch_size: PatchSize,
     /// The unpatched value at the patch location.
     /// 
     /// This value will be added to the new starting offset in memory.
-    unpatched_value: usize,
+    pub unpatched_value: usize,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -366,12 +366,23 @@ struct ImportPatch {
 }
 
 /// Number of bytes to overwrite in a patch.
-#[derive(Debug, Eq, PartialEq)]
-enum PatchSize {
-    U8,
-    U16,
-    U32,
-    U64
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub enum PatchSize {
+    U8 = 1,
+    U16 = 2,
+    U32 = 4,
+    U64 = 8
+}
+impl PatchSize {
+    pub(crate) fn max_value(&self) -> usize {
+        match self {
+            PatchSize::U8 => u8::MAX as usize,
+            PatchSize::U16 => u16::MAX as usize,
+            PatchSize::U32 => u32::MAX as usize,
+            PatchSize::U64 => u64::MAX as usize,
+        }
+    }
 }
 
 /// A patch to be applied by the assembler.
@@ -1454,7 +1465,7 @@ mod tests {
 
         let module = assemble_source("test", &source).unwrap();
 
-        let exp_patch = LinkerPatch::NewOffset(OffsetPatch {
+        let exp_patch = LinkerPatch::LabelNewOffset(LabelNewOffsetPatch {
             patch_at: BaseOffset(8),
             patch_size: PatchSize::U32,
             unpatched_value: 4,
@@ -1475,7 +1486,7 @@ mod tests {
 
         let module = assemble_source("test", &source).unwrap();
 
-        let exp_patch = LinkerPatch::NewOffset(OffsetPatch {
+        let exp_patch = LinkerPatch::LabelNewOffset(LabelNewOffsetPatch {
             patch_at: BaseOffset(0),
             patch_size: PatchSize::U32,
             unpatched_value: 12,
