@@ -1,6 +1,6 @@
 mod parse;
 mod token;
-mod codegen;
+pub (crate) mod codegen;
 mod helpers;
 
 use std::{borrow::Borrow, collections::{HashMap, HashSet}, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}};
@@ -79,9 +79,9 @@ enum RefKind {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct ModuleRef {
-    module: ModuleName,
-    member: MemberName,
+pub struct ModuleRef {
+    pub module: ModuleName,
+    pub member: MemberName,
 }
 
 /// An offset from the start of an assembly module's code (i.e. from 0).
@@ -91,6 +91,11 @@ impl Deref for BaseOffset {
     type Target = usize;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+impl DerefMut for BaseOffset {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 impl From<usize> for BaseOffset {
@@ -129,7 +134,7 @@ enum PseudoInstruction {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u8)]
-enum Condition {
+pub enum Condition {
     Eq = 0b0000,
 }
 
@@ -356,13 +361,13 @@ pub struct LabelNewOffsetPatch {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct ImportPatch {
+pub struct ImportPatch {
     /// Where in the module's code the patch should be applied.
-    patch_at: BaseOffset,
+    pub patch_at: BaseOffset,
     /// The number of bytes to patch.
-    patch_size: PatchSize,
+    pub patch_size: PatchSize,
     /// Module to import the patch value from.
-    import_module: ModuleRef,
+    pub import_module: ModuleRef,
 }
 
 /// Number of bytes to overwrite in a patch.
@@ -411,9 +416,9 @@ pub struct RawPatch {
 #[derive(Debug, Eq, PartialEq)]
 pub struct BranchPatch {
     /// Where in the module's code the patch should be applied.
-    patch_at: BaseOffset,
-    reference: String,
-    cond: Option<Condition>,
+    pub patch_at: BaseOffset,
+    pub reference: String,
+    pub cond: Option<Condition>,
 }
 
 #[derive(Debug, Eq, PartialEq)]

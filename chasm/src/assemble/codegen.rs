@@ -737,7 +737,7 @@ fn generate_branch_with_link(
     Ok(should_linker_patch)
 }
 
-fn generate_branch(
+pub (crate) fn generate_branch(
     reference: &str,
     cond: &Option<Condition>,
     output: &mut Vec<u8>,
