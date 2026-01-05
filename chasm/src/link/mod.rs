@@ -4,8 +4,11 @@ use anyhow::{Result, anyhow, bail};
 use crate::assemble::AssemblyModule;
 use crate::assemble::BaseOffset;
 use crate::assemble::BranchPatch;
+use crate::assemble::ImportDefinitionRefPatch;
+use crate::assemble::ImportLabelRefPatch;
 use crate::assemble::LabelNewOffsetPatch;
 use crate::assemble::LinkerPatch;
+use crate::assemble::ModuleRef;
 use crate::assemble::PatchSize;
 use crate::assemble::ThumbAddrPseudoPatch;
 use crate::assemble::codegen;
@@ -29,6 +32,7 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
     let main = modules.next().unwrap();
     let mut main_bin = main.code;
     let mut modules_to_offsets = HashMap::new();
+    // let mut module_pub_definitions = HashMap::new();
 
     for mut module in modules {
         if modules_to_offsets.contains_key(&module.modname) {
@@ -45,7 +49,12 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
                 LinkerPatch::LabelNewOffset(new_offset_patch) => {
                     patch_label_offset(&mut module.code, new_offset_patch, main_bin.len())?;
                 }
-                LinkerPatch::Import(import_patch) => todo!(),
+                LinkerPatch::ImportLabelRef(import_label_patch) => {
+                    patch_label_import(&mut module.code, import_label_patch)?;
+                },
+                LinkerPatch::ImportDefinitionRef(import_def_patch) => {
+                    patch_def_import(&mut module.code, import_def_patch)?;
+                },
                 LinkerPatch::BranchWithNewOffset(branch_patch) => {
                     patch_branch_offset(&mut module.code, &module.labels, branch_patch, main_bin.len())?;
                 },
@@ -63,6 +72,22 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
     }
 
     Ok(Binary(main_bin))
+}
+
+fn patch_def_import(
+    module_code: &mut Vec<u8>,
+    import_patch: ImportDefinitionRefPatch,
+) -> Result<()> {
+    let ImportDefinitionRefPatch { patch_at, patch_size, import_module: ModuleRef { module, member } } = import_patch;
+    todo!()
+}
+
+fn patch_label_import(
+    module_code: &mut Vec<u8>,
+    import_patch: ImportLabelRefPatch,
+) -> Result<()> {
+    let ImportLabelRefPatch { patch_at, patch_size, import_module: ModuleRef { module, member } } = import_patch;
+    todo!()
 }
 
 fn patch_thumb_addr_offset(

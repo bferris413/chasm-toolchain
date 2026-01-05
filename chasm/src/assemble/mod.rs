@@ -69,7 +69,7 @@ enum NodeKind {
     Register(Register),
     Label,
     LabelRef(RefKind),
-    DefinedRef,
+    DefinitionRef(RefKind),
 }
 
 #[derive(Debug)]
@@ -124,8 +124,13 @@ enum Instruction {
 
 #[derive(Debug)]
 enum PseudoInstruction {
-    Define    { identifier: String, hex_literal: HexLiteral },
-    DefinePub { identifier: String, hex_literal: HexLiteral },
+    Define     { identifier: String, hex_literal: HexLiteral },
+    Define8    { identifier: String, hex_literal: HexLiteral },
+    Define16   { identifier: String, hex_literal: HexLiteral },
+    Define32   { identifier: String, hex_literal: HexLiteral },
+    Define8Pub { identifier: String, hex_literal: HexLiteral },
+    Define16Pub { identifier: String, hex_literal: HexLiteral },
+    Define32Pub { identifier: String, hex_literal: HexLiteral },
     Import    { module_name: ModuleName },
     Mov       { reg: GeneralRegister, hex_literal: HexLiteral },
     PadWithTo { pad_with: u8, pad_to: BaseOffset },
@@ -342,10 +347,11 @@ pub struct AssemblyModule {
 #[derive(Debug, Eq, PartialEq)]
 pub enum LinkerPatch {
     LabelNewOffset(LabelNewOffsetPatch),
-    Import(ImportPatch),
+    ImportLabelRef(ImportLabelRefPatch),
     BranchWithNewOffset(BranchPatch),
     BranchLinkWithNewOffset(BranchWithLinkPatch),
     ThumbAddrPseudoWithNewOffset(ThumbAddrPseudoPatch),
+    ImportDefinitionRef(ImportDefinitionRefPatch),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -361,7 +367,17 @@ pub struct LabelNewOffsetPatch {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct ImportPatch {
+pub struct ImportLabelRefPatch {
+    /// Where in the module's code the patch should be applied.
+    pub patch_at: BaseOffset,
+    /// The number of bytes to patch.
+    pub patch_size: PatchSize,
+    /// Module to import the patch value from.
+    pub import_module: ModuleRef,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ImportDefinitionRefPatch {
     /// Where in the module's code the patch should be applied.
     pub patch_at: BaseOffset,
     /// The number of bytes to patch.
@@ -1322,8 +1338,46 @@ mod tests {
     }
 
     #[test]
-    fn define_stores_hex_literal_with_identifier() {
-        let source = AssemblySource::from("define!(GPIO-F, x1111.2222)".to_string());
+    fn define8_stores_hex_literal_with_identifier() {
+        let source = AssemblySource::from("define8!(BYTE, x11)".to_string());
+
+        let machine_code = assemble_source("test", &source).unwrap();
+
+        let hex_lit = machine_code.definitions.get("BYTE").unwrap();
+        assert_eq!(*hex_lit, HexLiteral::U8(0x11));
+    }
+
+    #[test]
+    fn define8_fails_on_wrong_size() {
+        let source = AssemblySource::from("define8!(BYTE, x1122)".to_string());
+
+        let err = assemble_source("test", &source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected 8-bit hex literal"), "{}", err);
+    }
+
+    #[test]
+    fn define16_stores_hex_literal_with_identifier() {
+        let source = AssemblySource::from("define16!(GPIO-F, x1111)".to_string());
+
+        let machine_code = assemble_source("test", &source).unwrap();
+
+        let hex_lit = machine_code.definitions.get("GPIO-F").unwrap();
+        assert_eq!(*hex_lit, HexLiteral::U16(0x1111));
+    }
+
+    #[test]
+    fn define16_fails_on_wrong_size() {
+        let source = AssemblySource::from("define16!(BYTE, x11)".to_string());
+
+        let err = assemble_source("test", &source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected 16-bit hex literal"), "{}", err);
+    }
+    
+    #[test]
+    fn define32_stores_hex_literal_with_identifier() {
+        let source = AssemblySource::from("define32!(GPIO-F, x1111.2222)".to_string());
 
         let machine_code = assemble_source("test", &source).unwrap();
 
@@ -1332,8 +1386,17 @@ mod tests {
     }
 
     #[test]
-    fn define_without_identifier_fails() {
-        let source = AssemblySource::from("define!(x1000, x1111.2222)".to_string());
+    fn define32_fails_on_wrong_size() {
+        let source = AssemblySource::from("define32!(mything, x1133)".to_string());
+
+        let err = assemble_source("test", &source).unwrap_err();
+
+        assert!(err.to_string().contains("Expected 32-bit hex literal"), "{}", err);
+    }
+
+    #[test]
+    fn define16_without_identifier_fails() {
+        let source = AssemblySource::from("define16!(x1000, x1111)".to_string());
 
         let err = assemble_source("test", &source).unwrap_err();
 
@@ -1342,7 +1405,7 @@ mod tests {
 
     #[test]
     fn define_without_comma_fails() {
-        let source = AssemblySource::from("define!(BASE-LENGTH x1111.2222)".to_string());
+        let source = AssemblySource::from("define32!(BASE-LENGTH x1111.2222)".to_string());
 
         let err = assemble_source("test", &source).unwrap_err();
 
@@ -1350,8 +1413,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_define_fails() {
-        let source = AssemblySource::from("define!()".to_string());
+    fn empty_define16_fails() {
+        let source = AssemblySource::from("define16!()".to_string());
 
         let err = assemble_source("test", &source).unwrap_err();
 
@@ -1361,7 +1424,7 @@ mod tests {
     #[test]
     fn defined_reference_standalone_to_identifier_gets_resolved() {
         let source = AssemblySource::from("
-            define!(BASE-ADDR, x1111.2222)
+            define32!(BASE-ADDR, x1111.2222)
             $BASE-ADDR
         ".to_string());
 
@@ -1416,8 +1479,8 @@ mod tests {
     }
 
     #[test]
-    fn define_pub_pseudo_creates_a_publicly_visible_definition() {
-        let source = AssemblySource::from("define-pub!(code-start, x2000.0000)".to_string());
+    fn define32_pub_pseudo_creates_a_publicly_visible_definition() {
+        let source = AssemblySource::from("define32-pub!(code-start, x2000.0000)".to_string());
         let exp_hex_lit = HexLiteral::U32(0x20000000);
 
         let machine_code = assemble_source("test", &source).unwrap();
@@ -1427,7 +1490,7 @@ mod tests {
     }
 
     #[test]
-    fn import_reference_creates_linker_patch_in_module() {
+    fn import_label_reference_creates_linker_patch_in_module() {
         let source = AssemblySource::from("
             import!(my-mod)
             &my-mod::SOME-CONST
@@ -1435,7 +1498,29 @@ mod tests {
 
         let module = assemble_source("test", &source).unwrap();
 
-        let exp_patch = LinkerPatch::Import(ImportPatch {
+        let exp_patch = LinkerPatch::ImportLabelRef(ImportLabelRefPatch {
+            patch_at: BaseOffset(0),
+            patch_size: PatchSize::U32,
+            import_module: ModuleRef {
+                module: ModuleName("my-mod".to_string()),
+                member: MemberName("SOME-CONST".to_string())
+            }
+        });
+
+        assert_eq!(module.linker_patches[0], exp_patch);
+        assert_eq!(module.linker_patches.len(), 1);
+    }
+
+    #[test]
+    fn import_definition_reference_creates_linker_patch_in_module() {
+        let source = AssemblySource::from("
+            import!(my-mod)
+            $my-mod::SOME-CONST
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        let exp_patch = LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
             patch_at: BaseOffset(0),
             patch_size: PatchSize::U32,
             import_module: ModuleRef {

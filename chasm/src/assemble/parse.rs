@@ -47,7 +47,7 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
                 nodes.push(node);
             }
             TokenKind::DefinedRef => {
-                let node = parse_defined_ref(token)?;
+                let node = parse_defined_ref(token, &mut tokens)?;
                 nodes.push(node);
             }
             other => {
@@ -125,6 +125,7 @@ fn parse_hex_literal_u32(token: Token<'_>) -> Node<'_> {
 }
 
 fn parse_hex_literal_u16(token: Token<'_>) -> Node<'_> {
+    dbg!(&token);
     let value = u16::from_str_radix(&token.lexeme[1..], 16)
         .expect("parsing u16 hex literal");
     let node = Node {
@@ -146,16 +147,35 @@ fn parse_hex_literal_u8(token: Token<'_>) -> Node<'_> {
     node
 }
 
-fn parse_defined_ref<'src>(ref_token: Token<'src>) -> Result<Node<'src>> {
+
+fn parse_defined_ref<'src>(mut ref_token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {
     assert!(ref_token.lexeme.starts_with('$'));
     assert!(ref_token.lexeme.len() > 1);
 
-    let node = Node {
-        kind: NodeKind::DefinedRef,
-        token: ref_token,
-    };
+    if matches!(tokens.peek(), Some(t) if t.kind == TokenKind::ModuleSep) {
+        let mod_sep = tokens.next().unwrap();
 
-    Ok(node)
+        // TODO: Pretty sloppy, should just separate the lexeme from the reference
+        // as a struct member so callees don't have to think about it.
+
+        // strip the leading '$' for module parsing, then restore it
+        let dol_lexeme = ref_token.lexeme;
+        ref_token.lexeme = &ref_token.lexeme[1..];
+
+        let mod_ref = parse_module_ref(&ref_token, mod_sep, tokens)?;
+
+        ref_token.lexeme = dol_lexeme;
+
+        Ok(Node {
+            kind: NodeKind::DefinitionRef(RefKind::ModuleRef(mod_ref)),
+            token: ref_token,
+        })
+    } else {
+        Ok(Node {
+            kind: NodeKind::DefinitionRef(RefKind::LocalRef),
+            token: ref_token,
+        })
+    }
 }
 
 fn parse_label_ref<'src>(mut ref_token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {
@@ -167,7 +187,7 @@ fn parse_label_ref<'src>(mut ref_token: Token<'src>, tokens: &mut Peekable<IntoI
 
         // TODO: Pretty sloppy, should just separate the lexeme from the reference
         // as a struct member so callees don't have to think about it.
-        // vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+
         // strip the leading '&' for module parsing, then restore it
         let amp_lexeme = ref_token.lexeme;
         ref_token.lexeme = &ref_token.lexeme[1..];
@@ -251,8 +271,12 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
     match token.lexeme {
         "thumb-addr!" => parse_thumb_addr_pseudo(token, tokens),
         "pad-with-to!" => parse_pad_with_to_pseudo(token, tokens),
-        "define!" => parse_define_pseudo(token, tokens),
-        "define-pub!" => parse_define_pub_pseudo(token, tokens),
+        "define8!" => parse_define8_pseudo(token, tokens),
+        "define16!" => parse_define16_pseudo(token, tokens),
+        "define32!" => parse_define32_pseudo(token, tokens),
+        "define8-pub!" => parse_define8_pub_pseudo(token, tokens),
+        "define16-pub!" => parse_define16_pub_pseudo(token, tokens),
+        "define32-pub!" => parse_define32_pub_pseudo(token, tokens),
         "mov!" => parse_mov_pseudo(token, tokens),
         "import!" => parse_import_pseudo(token, tokens),
         other => {
@@ -341,17 +365,100 @@ fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn
     Ok(node)
 }
 
-fn parse_define_pub_pseudo<'src>(define_pub_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
-    let mut define_node = parse_define_pseudo(define_pub_token, tokens)?;
-    let NodeKind::PseudoInstruction(PseudoInstruction::Define { identifier, hex_literal }) = define_node.kind else {
+fn parse_define8_pub_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let mut define8_node = parse_define8_pseudo(define_token, tokens)?;
+    let NodeKind::PseudoInstruction(PseudoInstruction::Define8 { identifier, hex_literal }) = define8_node.kind else {
         unreachable!()
     };
 
-    define_node.kind = NodeKind::PseudoInstruction(PseudoInstruction::DefinePub { identifier, hex_literal });
-    Ok(define_node)
+    define8_node.kind = NodeKind::PseudoInstruction(PseudoInstruction::Define8Pub { identifier, hex_literal });
+    Ok(define8_node)
 }
 
-fn parse_define_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+fn parse_define16_pub_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let mut define16_node = parse_define16_pseudo(define_token, tokens)?;
+    let NodeKind::PseudoInstruction(PseudoInstruction::Define16 { identifier, hex_literal }) = define16_node.kind else {
+        unreachable!()
+    };
+
+    define16_node.kind = NodeKind::PseudoInstruction(PseudoInstruction::Define16Pub { identifier, hex_literal });
+    Ok(define16_node)
+}
+
+fn parse_define32_pub_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let mut define32_node = parse_define32_pseudo(define_token, tokens)?;
+    let NodeKind::PseudoInstruction(PseudoInstruction::Define32 { identifier, hex_literal }) = define32_node.kind else {
+        unreachable!()
+    };
+
+    define32_node.kind = NodeKind::PseudoInstruction(PseudoInstruction::Define32Pub { identifier, hex_literal });
+    Ok(define32_node)
+}
+
+fn parse_define8_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let (define_token, identifier, hx) = parse_define_pseudo(define_token, tokens)?;
+    let HexLiteral::U8(..) = hx else {
+        let err = AssemblyError::new(
+            format!("Expected 8-bit hex literal"),
+            define_token.line,
+            define_token.column,
+            Some(define_token.column + define_token.lexeme.len()),
+            define_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let node = Node {
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::Define8 { identifier, hex_literal: hx }),
+        token: define_token,
+    };
+
+    Ok(node)
+}
+
+fn parse_define16_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let (define_token, identifier, hx) = parse_define_pseudo(define_token, tokens)?;
+    let HexLiteral::U16(..) = hx else {
+        let err = AssemblyError::new(
+            format!("Expected 16-bit hex literal"),
+            define_token.line,
+            define_token.column,
+            Some(define_token.column + define_token.lexeme.len()),
+            define_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let node = Node {
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::Define16 { identifier, hex_literal: hx }),
+        token: define_token,
+    };
+
+    Ok(node)
+}
+
+fn parse_define32_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+    let (define_token, identifier, hx) = parse_define_pseudo(define_token, tokens)?;
+    let HexLiteral::U32(..) = hx else {
+        let err = AssemblyError::new(
+            format!("Expected 32-bit hex literal"),
+            define_token.line,
+            define_token.column,
+            Some(define_token.column + define_token.lexeme.len()),
+            define_token.source,
+        );
+        return Err(err.into());
+    };
+
+    let node = Node {
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::Define32 { identifier, hex_literal: hx }),
+        token: define_token,
+    };
+
+    Ok(node)
+}
+
+fn parse_define_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<(Token<'src>, String, HexLiteral)> {
     let lparen = next_symbol_token_as(&[TokenKind::LParen], "(", &define_token, tokens)?;
     let identifier = next_symbol_token_as(&[TokenKind::Identifier], "identifier", &lparen, tokens)?;
     let comma = next_symbol_token_as(&[TokenKind::Comma], ",", &identifier, tokens)?;
@@ -359,12 +466,8 @@ fn parse_define_pseudo<'src>(define_token: Token<'src>, tokens: &mut dyn Iterato
     let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &hex_literal.token, tokens)?;
 
     let NodeKind::HexLiteral(hx) = hex_literal.kind else { unreachable!() };
-    let node = Node {
-        kind: NodeKind::PseudoInstruction(PseudoInstruction::Define { identifier: identifier.lexeme.to_string(), hex_literal: hx }),
-        token: define_token,
-    };
 
-    Ok(node)
+    Ok((define_token, identifier.lexeme.to_string(), hx))
 }
 
 fn parse_mov_pseudo<'src>(mov_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {

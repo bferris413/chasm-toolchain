@@ -7,11 +7,7 @@ use std::{collections::{HashMap, HashSet}, ops::Deref};
 use anyhow::{bail, Result};
 
 use crate::assemble::{
-    AssemblerPatch, AssemblyAst, AssemblyModule, BaseOffset, BranchPatch,
-    BranchWithLinkPatch, Condition, GeneralRegister, HexLiteral, ImportPatch,
-    Instruction, LinkerPatch, ModuleName, NodeKind, LabelNewOffsetPatch, PatchSize,
-    PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind,
-    ThumbAddrPseudoPatch
+    AssemblerPatch, AssemblyAst, AssemblyModule, BaseOffset, BranchPatch, BranchWithLinkPatch, Condition, GeneralRegister, HexLiteral, ImportDefinitionRefPatch, ImportLabelRefPatch, Instruction, LabelNewOffsetPatch, LinkerPatch, ModuleName, NodeKind, PatchSize, PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind, ThumbAddrPseudoPatch
 };
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
@@ -87,7 +83,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                             bail!("Module '{}' has not been imported", module_ref.module.0);
                         }
 
-                        let patch = LinkerPatch::Import(ImportPatch {
+                        let patch = LinkerPatch::ImportLabelRef(ImportLabelRefPatch {
                             patch_at: code.len().into(),
                             patch_size: PatchSize::U32,
                             import_module: module_ref,
@@ -98,13 +94,32 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                     }
                 }
             }
-            NodeKind::DefinedRef => {
-                let reference = &node.token.lexeme[1..]; // strip '$'
-                match definitions.get(reference) {
-                    Some(&hex_lit) => generate_hex_literal(&hex_lit, &mut code),
-                    None => {
-                        // No patch for these, we assume they're at the beginning of the module for now
-                        bail!("Undefined definition '{reference}'");
+            NodeKind::DefinitionRef(ref_kind) => {
+                match ref_kind {
+                    RefKind::LocalRef => {
+                        let reference = &node.token.lexeme[1..]; // strip '$'
+                        match definitions.get(reference) {
+                            Some(&hex_lit) => generate_hex_literal(&hex_lit, &mut code),
+                            None => {
+                                // No local patch for these, we assume they're at the beginning of the module for now
+                                bail!("Undefined definition '{reference}'");
+                            }
+                        }
+                    }
+                    RefKind::ModuleRef(module_ref) => {
+                        if ! imports.contains(&module_ref.module) {
+                            bail!("Module '{}' has not been imported", module_ref.module.0);
+                        }
+
+                        let patch = LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
+                            patch_at: code.len().into(),
+                            patch_size: PatchSize::U32,
+                            import_module: module_ref,
+                        });
+
+                        linker_patches.push(patch);
+                        generate_ref(REF_PLACEHOLDER, &mut code);
+
                     }
                 }
             }
@@ -210,10 +225,25 @@ fn generate_pseudo_instruction(
     imports: &mut HashSet<ModuleName>,
 ) -> Result<()> {
     match pseudo {
-        PseudoInstruction::Define { identifier, hex_literal } => {
+        PseudoInstruction::Define { .. } => {
+            unreachable!() // this variant exists for parser purposes only, users can't reach it
+        }
+        PseudoInstruction::Define8 { identifier, hex_literal } => {
             generate_define(identifier, hex_literal, definitions, pub_definitions)?;
         }
-        PseudoInstruction::DefinePub { identifier, hex_literal } => {
+        PseudoInstruction::Define16 { identifier, hex_literal } => {
+            generate_define(identifier, hex_literal, definitions, pub_definitions)?;
+        }
+        PseudoInstruction::Define32 { identifier, hex_literal } => {
+            generate_define(identifier, hex_literal, definitions, pub_definitions)?;
+        }
+        PseudoInstruction::Define8Pub { identifier, hex_literal } => {
+            generate_define_pub(identifier, hex_literal, definitions, pub_definitions)?;
+        }
+        PseudoInstruction::Define16Pub { identifier, hex_literal } => {
+            generate_define_pub(identifier, hex_literal, definitions, pub_definitions)?;
+        }
+        PseudoInstruction::Define32Pub { identifier, hex_literal } => {
             generate_define_pub(identifier, hex_literal, definitions, pub_definitions)?;
         }
         PseudoInstruction::Import { module_name } => {
