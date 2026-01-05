@@ -7,6 +7,7 @@ use crate::assemble::BranchPatch;
 use crate::assemble::LabelNewOffsetPatch;
 use crate::assemble::LinkerPatch;
 use crate::assemble::PatchSize;
+use crate::assemble::ThumbAddrPseudoPatch;
 use crate::assemble::codegen;
 
 const LINK_ERR: &str = "Link error:";
@@ -48,8 +49,12 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
                 LinkerPatch::BranchWithNewOffset(branch_patch) => {
                     patch_branch_offset(&mut module.code, &module.labels, branch_patch, main_bin.len())?;
                 },
-                LinkerPatch::BranchLinkWithNewOffset(branch_with_link_patch) => todo!(),
-                LinkerPatch::ThumbAddrPseudoWithNewOffset(thumb_addr_pseudo_patch) => todo!(),
+                LinkerPatch::BranchLinkWithNewOffset(_branch_with_link_patch) => {
+                    // NO-OP - only module-local references are currently supported with branching
+                },
+                LinkerPatch::ThumbAddrPseudoWithNewOffset(thumb_addr_pseudo_patch) => {
+                    patch_thumb_addr_offset(&mut module.code, &module.labels, thumb_addr_pseudo_patch)?;
+                },
             }
         }
 
@@ -58,6 +63,32 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
     }
 
     Ok(Binary(main_bin))
+}
+
+fn patch_thumb_addr_offset(
+    module_code: &mut Vec<u8>,
+    labels: &HashMap<String, BaseOffset>,
+    thumb_addr_patch: ThumbAddrPseudoPatch,
+) -> Result<()> {
+    let ThumbAddrPseudoPatch { patch_at, reference } = thumb_addr_patch;
+    let mut thumb_bytes = Vec::new();
+    let is_patch = true;
+
+    if patch_at.0 > module_code.len() {
+        bail!("patch offset {patch_at:?} is out of bounds (module code length {})", module_code.len());
+    }
+
+    codegen::generate_thumb_addr_pseudo(
+        &reference,
+        &mut thumb_bytes,
+        &labels,
+        &mut HashMap::new(),
+        is_patch,
+    )?;
+
+    module_code[*patch_at..*patch_at + thumb_bytes.len()].copy_from_slice(&thumb_bytes);
+
+    Ok(())
 }
 
 fn patch_branch_offset(
@@ -283,6 +314,34 @@ mod tests {
 
         let mut exp_bin = main_bin;
         exp_bin.extend(lib2_bin);
+
+        let bin = link(modules).unwrap();
+
+        assert_eq!(bin.0, exp_bin);
+    }
+
+    #[test]
+    fn thumb_addr_pseudo_is_patched_with_new_offsets() {
+        let main_bin_len = 200;
+        let main_bin = vec![0u8; main_bin_len];
+        let modules = vec![
+            AssemblyModule { modname: "main".to_string(), code: main_bin.clone(), ..Default::default() },
+            AssemblyModule { 
+                modname: "lib2".to_string(),
+                code: vec![0x11, 0x11, 0x11, 0x12, 0x12, 0x12],
+                linker_patches: vec![
+                    LinkerPatch::ThumbAddrPseudoWithNewOffset(ThumbAddrPseudoPatch {
+                        patch_at: 2.into(),
+                        reference: "&label".to_string()
+                    })
+                ],
+                labels: HashMap::from_iter([("label".to_string(), BaseOffset(30))]),
+                ..Default::default()
+            },
+        ];
+        let mut exp_bin = main_bin;
+        // (label base offset + main_bin len) | 1 = 231 (0xE7) to 32-bit little endian
+        exp_bin.extend(vec![0x11, 0x11, 0xE7, 0x00, 0x00, 0x00]);
 
         let bin = link(modules).unwrap();
 

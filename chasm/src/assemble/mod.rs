@@ -430,8 +430,8 @@ pub struct BranchWithLinkPatch {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ThumbAddrPseudoPatch {
-    patch_at: BaseOffset,
-    reference: String,
+    pub patch_at: BaseOffset,
+    pub reference: String,
 }
 
 #[derive(Clone, Debug)]

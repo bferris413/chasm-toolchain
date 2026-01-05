@@ -167,13 +167,14 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                 AssemblerPatch::ThumbAddrPseudo(thumb_patch) => {
                     let place = thumb_patch.patch_at;
                     let mut thumb_bytes = Vec::new();
+                    let is_patch = true;
 
                     generate_thumb_addr_pseudo(
                         &thumb_patch.reference,
                         &mut thumb_bytes,
                         &labels,
                         &mut HashMap::new(),
-                        Some(place),
+                        is_patch,
                     )?;
 
                     code[*place..*place + thumb_bytes.len()].copy_from_slice(&thumb_bytes);
@@ -226,8 +227,8 @@ fn generate_pseudo_instruction(
             generate_pad_with_to(pad_with, pad_to, output, labels, unresolved_refs, not_as_patch)?;
         }
         PseudoInstruction::ThumbAddr { reference } => {
-            let not_as_patch = None;
-            generate_thumb_addr_pseudo(&reference, output, labels, unresolved_refs, not_as_patch)?;
+            let is_patch = false;
+            generate_thumb_addr_pseudo(&reference, output, labels, unresolved_refs, is_patch)?;
         }
     }
 
@@ -594,17 +595,17 @@ fn generate_define(
     Ok(())
 }
 
-fn generate_thumb_addr_pseudo(
+pub (crate) fn generate_thumb_addr_pseudo(
     reference: &str,
     output: &mut Vec<u8>,
     labels: &HashMap<String, BaseOffset>,
     unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
-    patch_offset: Option<BaseOffset>,
+    is_patch: bool,
 ) -> Result<()> {
     let target_addr = match labels.get(&reference[1..]) {
         Some(addr) => *addr,
         None => {
-            if patch_offset.is_some() {
+            if is_patch {
                 // we're expected to be patching - if the label isn't present now then it never will be
                 bail!("Undefined reference '{reference}'")
             }
