@@ -164,7 +164,7 @@ fn patch_def_import(
     import_patch: ImportDefinitionRefPatch,
     module_pub_definitions: &HashMap<String, HashMap<String, HexLiteral>>,
 ) -> Result<Option<ImportDefinitionRefPatch>> {
-    let ImportDefinitionRefPatch { patch_at, patch_size, import_module: ModuleRef { module, member } } = &import_patch;
+    let ImportDefinitionRefPatch { patch_at, ref_size: patch_size, import_module: ModuleRef { module, member } } = &import_patch;
 
     let patch_at = patch_at.0;
     if patch_at > module_code.len() {
@@ -575,7 +575,7 @@ mod tests {
                     // requires the second pass
                     LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
                         patch_at: BaseOffset(4),
-                        patch_size: RefSize(8),
+                        ref_size: RefSize(8),
                         import_module: ModuleRef { module: "lib2".into(), member: "OTHER".into() }
                     })
                 ],
@@ -588,7 +588,7 @@ mod tests {
                     // requires the second pass
                     LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
                         patch_at: BaseOffset(4),
-                        patch_size: RefSize(16),
+                        ref_size: RefSize(16),
                         import_module: ModuleRef { module: "lib3".into(), member: "MYCONST".into() }
                     })
                 ],
@@ -608,7 +608,7 @@ mod tests {
                     // requires the first pass
                     LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
                         patch_at: BaseOffset(0),
-                        patch_size: RefSize(32),
+                        ref_size: RefSize(32),
                         import_module: ModuleRef { module: "lib2".into(), member: "MYCONST".into() }
                     })
                 ],
@@ -639,7 +639,7 @@ mod tests {
                     // requires the second pass
                     LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
                         patch_at: BaseOffset(4),
-                        patch_size: RefSize(8),
+                        ref_size: RefSize(8),
                         import_module: ModuleRef { module: "lib2".into(), member: "OTHER".into() }
                     })
                 ],

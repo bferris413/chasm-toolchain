@@ -466,8 +466,8 @@ pub struct ImportLabelRefPatch {
 pub struct ImportDefinitionRefPatch {
     /// Where in the module's code the patch should be applied.
     pub patch_at: BaseOffset,
-    /// The number of bytes to patch.
-    pub patch_size: RefSize,
+    /// The expected size of the reference.
+    pub ref_size: RefSize,
     /// Module to import the patch value from.
     pub import_module: ModuleRef,
 }
@@ -1612,7 +1612,7 @@ mod tests {
 
         let exp_patch = LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
             patch_at: BaseOffset(0),
-            patch_size: RefSize(16),
+            ref_size: RefSize(16),
             import_module: ModuleRef {
                 module: ModuleName("my-mod".to_string()),
                 member: MemberName("SOME-CONST".to_string())

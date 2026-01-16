@@ -116,7 +116,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
 
                         let patch = LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
                             patch_at: code.len().into(),
-                            patch_size: size,
+                            ref_size: size,
                             import_module: module_ref,
                         });
 
