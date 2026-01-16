@@ -25,8 +25,14 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 skip_comment(&mut chars, &mut col);
             }
             ':' => {
-                let module_sep_token = tokenize_module_sep(source, &mut chars, i, line, &mut col)?;
-                tokens.push(module_sep_token);
+                let t;
+                if let Some((_, ':')) = chars.peek() {
+                    t = tokenize_module_sep(source, &mut chars, i, line, &mut col)?;
+                } else {
+                    t = tokenize_colon(source, i, line, &mut col);
+                }
+                
+                tokens.push(t);
             }
             '(' | ')' => {
                 let paren = tokenize_paren(source, i, line, &mut col);
@@ -43,8 +49,7 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 tokens.push(label_token);
             }
             '&' | '$' => {
-                // label reference
-                let ref_token = tokenize_ref(source, &mut chars, i, line, &mut col)?;
+                let ref_token = tokenize_ref(source, i, line, &mut col);
                 tokens.push(ref_token);
             }
             ',' => {
@@ -58,6 +63,10 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
             '{' | '}' => {
                 let curly = tokenize_curly(source, i, line, &mut col);
                 tokens.push(curly);
+            }
+            c if c.is_ascii_digit() => {
+                let digits = tokenize_digits(source, &mut chars, i, line, &mut col)?;
+                tokens.push(digits);
             }
             c if c.is_ascii_alphabetic() => {
                 let identifier = tokenize_identifier(source, &mut chars, i, line, &mut col)?;
@@ -139,6 +148,29 @@ fn tokenize_bracket<'src>(
     t
 }
 
+fn tokenize_colon<'src>(
+    source: &'src AssemblySource,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) ->Token<'src> {
+    let lexeme = &source[start_index..start_index + 1];
+    let kind = match &lexeme[..] {
+        ":" => TokenKind::Colon,
+        _ => unreachable!(),
+    }; 
+    let t = Token {
+        kind,
+        lexeme,
+        line,
+        column: *col,
+        source,
+    };
+
+    *col += 1;
+    t
+}
+
 fn tokenize_paren<'src>(
     source: &'src AssemblySource,
     start_index: usize,
@@ -182,6 +214,35 @@ fn tokenize_comma<'src>(
     t
 }
 
+fn tokenize_digits<'src>(
+    source: &'src AssemblySource,
+    chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
+    start_index: usize,
+    line: usize,
+    col: &mut usize,
+) -> Result<Token<'src>> {
+    let mut cur_index = start_index + 1;
+    let start_col = *col;
+    *col += 1;
+
+    while matches!(chars.peek(), Some((_, c)) if c.is_digit(10)) {
+        let (_, _) = chars.next().unwrap();
+        *col += 1;
+        cur_index += 1;
+    }
+
+    let lexeme = &source[start_index..cur_index];
+    let t = Token {
+        kind: TokenKind::Digits,
+        lexeme,
+        line,
+        column: start_col,
+        source,
+    };
+
+    Ok(t)
+}
+
 fn tokenize_identifier<'src>(
     source: &'src AssemblySource,
     chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
@@ -222,50 +283,26 @@ fn tokenize_identifier<'src>(
 
 fn tokenize_ref<'src>(
     source: &'src AssemblySource,
-    chars: &mut std::iter::Peekable<impl Iterator<Item = (usize, char)>>,
     start_index: usize,
     line: usize,
     col: &mut usize,
-) -> Result<Token<'src>> {
-    let mut cur_index = start_index + 1;
-    let start_col = *col;
-    *col += 1;
-
-    while matches!(chars.peek(), Some((_, c)) if is_valid_identifier_char(*c)) {
-        let (_, _) = chars.next().unwrap();
-        *col += 1;
-        cur_index += 1;
-    }
-
-    let lexeme = &source[start_index..cur_index];
-    if lexeme.len() < 2 {
-        let err = AssemblyError::new(
-            "Reference must have at least one character".to_string(),
-            line,
-            start_col,
-            Some(*col),
-            source,
-        );
-        return Err(err.into());
-    }
-
-    let ref_char = &lexeme[0..1];
-    let kind = if ref_char == "&" {
-        TokenKind::LabelRef
-    } else {
-        assert!(ref_char == "$");
-        TokenKind::DefinedRef
-    };
-
+) ->Token<'src> {
+    let lexeme = &source[start_index..start_index + 1];
+    let kind = match lexeme {
+        "&" => TokenKind::LabelRef,
+        "$" => TokenKind::DefinedRef,
+        _ => unreachable!(),
+    }; 
     let t = Token {
         kind,
         lexeme,
         line,
-        column: start_col,
+        column: *col,
         source,
     };
 
-    Ok(t)
+    *col += 1;
+    t
 }
 
 fn tokenize_module_sep<'src>(

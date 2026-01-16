@@ -53,7 +53,7 @@ impl Deref for AssemblySource {
 }
 
 #[derive(Debug)]
-struct AssemblyAst<'src> {
+pub struct AssemblyAst<'src> {
     nodes: Vec<Node<'src>>,
 }
 #[derive(Debug)]
@@ -68,20 +68,76 @@ enum NodeKind {
     PseudoInstruction(PseudoInstruction),
     Register(Register),
     Label,
-    LabelRef(RefKind),
-    DefinitionRef(RefKind),
+    LabelRef(LabelRef),
+    DefinitionRef(DefinitionRef),
 }
 
-#[derive(Debug)]
-enum RefKind {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabelRef {
+    /// Expected size of the label being referenced
+    pub size: RefSize,
+    /// The of reference we're pointing to
+    pub kind: RefKind
+}
+impl Display for LabelRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "&{}", self.kind)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DefinitionRef {
+    /// Expected size of the definition being referenced
+    size: RefSize,
+    /// The of reference we're pointing to
+    kind: RefKind
+}
+
+/// Number of bits a reference occupies.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RefSize(pub usize);
+impl RefSize {
+    pub fn as_n_bytes(&self) -> usize {
+        self.0 / 8
+    }
+}
+impl TryFrom<&str> for RefSize {
+    type Error = Error;
+
+    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+        match value {
+            "8" => Ok(RefSize(8)),
+            "16" => Ok(RefSize(16)),
+            "32" => Ok(RefSize(32)),
+            "64" => Ok(RefSize(64)),
+            other => bail!("Invalid reference size '{}'", other),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RefKind {
     ModuleRef(ModuleRef),
-    LocalRef
+    LocalRef(MemberName)
+}
+impl Display for RefKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefKind::ModuleRef(module_ref) => write!(f, "{module_ref}"),
+            RefKind::LocalRef(member_name) => write!(f, "{}", member_name),
+        }
+    }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct ModuleRef {
     pub module: ModuleName,
     pub member: MemberName,
+}
+impl Display for ModuleRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", self.module, self.member)
+    }
 }
 
 /// An offset from the start of an assembly module's code (i.e. from 0).
@@ -104,13 +160,13 @@ impl From<usize> for BaseOffset {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Instruction {
     Adds { dest: GeneralRegister, value: HexLiteral },
     Ands { dest: GeneralRegister, src: GeneralRegister },
-    Branch { reference: String, cond: Option<Condition> },
+    Branch { reference: LabelRef, cond: Option<Condition> },
     BranchExchange { branch_reg: BranchableRegister },
-    BranchWithLink { reference: String, cond: Option<Condition> },
+    BranchWithLink { reference: LabelRef, cond: Option<Condition> },
     Eors { dest: GeneralRegister, src: GeneralRegister },
     Ldr  { dest: GeneralRegister, src: GeneralRegister },
     Movs { dest: GeneralRegister, value: HexLiteral },
@@ -306,10 +362,25 @@ impl<'src> DerefMut for AssemblyTokens<'src> {
     }
 }
 
-#[derive(Debug, Default, Eq, PartialEq, Hash)]
-pub struct ModuleName(String);
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub struct ModuleName(pub String);
+impl From<String> for ModuleName {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+impl From<&str> for ModuleName {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
 impl Borrow<str> for ModuleName {
     fn borrow(&self) -> &str {
+        self.0.as_str()
+    }
+}
+impl AsRef<str> for ModuleName {
+    fn as_ref(&self) -> &str {
         self.0.as_str()
     }
 }
@@ -319,10 +390,25 @@ impl Display for ModuleName {
     }
 }
 
-#[derive(Debug, Default, Eq, PartialEq, Hash)]
-pub struct MemberName(String);
+#[derive(Clone, Debug, Default, Hash, Eq, PartialEq)]
+pub struct MemberName(pub String);
+impl From<String> for MemberName {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+impl From<&str> for MemberName {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
 impl Borrow<str> for MemberName {
     fn borrow(&self) -> &str {
+        self.0.as_str()
+    }
+}
+impl AsRef<str> for MemberName {
+    fn as_ref(&self) -> &str {
         self.0.as_str()
     }
 }
@@ -348,8 +434,8 @@ pub struct AssemblyModule {
 pub enum LinkerPatch {
     LabelNewOffset(LabelNewOffsetPatch),
     ImportLabelRef(ImportLabelRefPatch),
-    BranchWithNewOffset(BranchPatch),
-    BranchLinkWithNewOffset(BranchWithLinkPatch),
+    BranchWithImport(BranchPatch),
+    BranchLinkWithImport(BranchWithLinkPatch),
     ThumbAddrPseudoWithNewOffset(ThumbAddrPseudoPatch),
     ImportDefinitionRef(ImportDefinitionRefPatch),
 }
@@ -381,7 +467,7 @@ pub struct ImportDefinitionRefPatch {
     /// Where in the module's code the patch should be applied.
     pub patch_at: BaseOffset,
     /// The number of bytes to patch.
-    pub patch_size: PatchSize,
+    pub patch_size: RefSize,
     /// Module to import the patch value from.
     pub import_module: ModuleRef,
 }
@@ -433,14 +519,14 @@ pub struct RawPatch {
 pub struct BranchPatch {
     /// Where in the module's code the patch should be applied.
     pub patch_at: BaseOffset,
-    pub reference: String,
+    pub reference: LabelRef,
     pub cond: Option<Condition>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct BranchWithLinkPatch {
     patch_at: BaseOffset,
-    reference: String,
+    reference: LabelRef,
     cond: Option<Condition>,
 }
 
@@ -477,6 +563,8 @@ enum TokenKind {
     Comma,
     PseudoIdentifier,
     ModuleSep,
+    Colon,
+    Digits,
 }
 impl Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -498,6 +586,8 @@ impl Display for TokenKind {
             TokenKind::PseudoIdentifier => write!(f, "pseudo identifier"),
             TokenKind::Comma => write!(f, "comma"),
             TokenKind::ModuleSep => write!(f, "module separator"),
+            TokenKind::Colon => write!(f, "colon"),
+            TokenKind::Digits => write!(f, "digits"),
         }
     }
 }
@@ -1425,7 +1515,7 @@ mod tests {
     fn defined_reference_standalone_to_identifier_gets_resolved() {
         let source = AssemblySource::from("
             define32!(BASE-ADDR, x1111.2222)
-            $BASE-ADDR
+            $32:BASE-ADDR
         ".to_string());
 
         let machine_code = assemble_source("test", &source).unwrap();
@@ -1515,14 +1605,14 @@ mod tests {
     fn import_definition_reference_creates_linker_patch_in_module() {
         let source = AssemblySource::from("
             import!(my-mod)
-            $my-mod::SOME-CONST
+            $16:my-mod::SOME-CONST
         ".to_string());
 
         let module = assemble_source("test", &source).unwrap();
 
         let exp_patch = LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
             patch_at: BaseOffset(0),
-            patch_size: PatchSize::U32,
+            patch_size: RefSize(16),
             import_module: ModuleRef {
                 module: ModuleName("my-mod".to_string()),
                 member: MemberName("SOME-CONST".to_string())
@@ -1597,9 +1687,9 @@ mod tests {
 
         let module = assemble_source("test", &source).unwrap();
 
-        let exp_patch = LinkerPatch::BranchWithNewOffset(BranchPatch {
+        let exp_patch = LinkerPatch::BranchWithImport(BranchPatch {
             patch_at: BaseOffset(0),
-            reference: "&start".to_string(),
+            reference: LabelRef { size: RefSize(32), kind: RefKind::LocalRef(MemberName("start".to_string())) },
             cond: None,
         });
 
@@ -1618,9 +1708,9 @@ mod tests {
 
         let module = assemble_source("test", &source).unwrap();
 
-        let exp_patch = LinkerPatch::BranchLinkWithNewOffset(BranchWithLinkPatch {
+        let exp_patch = LinkerPatch::BranchLinkWithImport(BranchWithLinkPatch {
             patch_at: BaseOffset(0),
-            reference: "&start".to_string(),
+            reference: LabelRef { size: RefSize(32), kind: RefKind::LocalRef(MemberName("start".to_string())) },
             cond: None
         });
 
@@ -1641,7 +1731,7 @@ mod tests {
 
         let exp_patch = LinkerPatch::ThumbAddrPseudoWithNewOffset(ThumbAddrPseudoPatch {
             patch_at: BaseOffset(0),
-            reference: "&start".to_string(),
+            reference: "start".to_string(),
         });
 
         assert_eq!(module.linker_patches[0], exp_patch);
@@ -1659,9 +1749,9 @@ mod tests {
 
         let module = assemble_source("test", &source).unwrap();
 
-        let exp_patch = LinkerPatch::BranchWithNewOffset(BranchPatch {
+        let exp_patch = LinkerPatch::BranchWithImport(BranchPatch {
             patch_at: BaseOffset(4),
-            reference: "&loop".to_string(),
+            reference: LabelRef { size: RefSize(32), kind: RefKind::LocalRef(MemberName("loop".to_string())) },
             cond: None,
         });
 
@@ -1678,9 +1768,9 @@ mod tests {
 
         let module = assemble_source("test", &source).unwrap();
 
-        let exp_patch = LinkerPatch::BranchLinkWithNewOffset(BranchWithLinkPatch {
+        let exp_patch = LinkerPatch::BranchLinkWithImport(BranchWithLinkPatch {
             patch_at: BaseOffset(0),
-            reference: "&myfunc".to_string(),
+            reference: LabelRef { size: RefSize(32), kind: RefKind::LocalRef(MemberName("myfunc".to_string())) },
             cond: None,
         });
 

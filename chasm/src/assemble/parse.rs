@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use crate::assemble::helpers::normalize_to_ascii_lower;
 use crate::assemble::{
-    AssemblyAst, AssemblyError, AssemblyTokens, BaseOffset, BranchableRegister, Condition, GeneralRegister, HexLiteral, Instruction, MemberName, ModuleName, ModuleRef, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, RefKind, Register, Token, TokenKind
+    AssemblyAst, AssemblyError, AssemblyTokens, BaseOffset, BranchableRegister, Condition, DefinitionRef, GeneralRegister, HexLiteral, Instruction, LabelRef, MemberName, ModuleName, ModuleRef, Node, NodeKind, PoppableRegister, PseudoInstruction, PushableRegister, RefKind, RefSize, Register, Token, TokenKind
 };
 
 pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
@@ -125,7 +125,6 @@ fn parse_hex_literal_u32(token: Token<'_>) -> Node<'_> {
 }
 
 fn parse_hex_literal_u16(token: Token<'_>) -> Node<'_> {
-    dbg!(&token);
     let value = u16::from_str_radix(&token.lexeme[1..], 16)
         .expect("parsing u16 hex literal");
     let node = Node {
@@ -148,62 +147,58 @@ fn parse_hex_literal_u8(token: Token<'_>) -> Node<'_> {
 }
 
 
-fn parse_defined_ref<'src>(mut ref_token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {
+fn parse_defined_ref<'src>(ref_token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {
     assert!(ref_token.lexeme.starts_with('$'));
-    assert!(ref_token.lexeme.len() > 1);
+
+    let size_token = next_symbol_token_as(&[TokenKind::Digits], "digits", &ref_token, tokens)?;
+    let ref_size = RefSize::try_from(size_token.lexeme)?;
+    let col_token = next_symbol_token_as(&[TokenKind::Colon], "colon", &size_token, tokens)?;
+    let ident_token = next_symbol_token_as(&[TokenKind::Identifier], "identifier", &col_token, tokens)?;
 
     if matches!(tokens.peek(), Some(t) if t.kind == TokenKind::ModuleSep) {
         let mod_sep = tokens.next().unwrap();
-
-        // TODO: Pretty sloppy, should just separate the lexeme from the reference
-        // as a struct member so callees don't have to think about it.
-
-        // strip the leading '$' for module parsing, then restore it
-        let dol_lexeme = ref_token.lexeme;
-        ref_token.lexeme = &ref_token.lexeme[1..];
-
-        let mod_ref = parse_module_ref(&ref_token, mod_sep, tokens)?;
-
-        ref_token.lexeme = dol_lexeme;
+        let mod_ref = parse_module_ref(&ident_token, mod_sep, tokens)?;
 
         Ok(Node {
-            kind: NodeKind::DefinitionRef(RefKind::ModuleRef(mod_ref)),
+            kind: NodeKind::DefinitionRef(DefinitionRef {
+                size: ref_size,
+                kind: RefKind::ModuleRef(mod_ref),
+            }),
             token: ref_token,
         })
     } else {
         Ok(Node {
-            kind: NodeKind::DefinitionRef(RefKind::LocalRef),
+            kind: NodeKind::DefinitionRef(DefinitionRef {
+                size: ref_size,
+                kind: RefKind::LocalRef(MemberName(ident_token.lexeme.to_string())),
+            }),
             token: ref_token,
         })
     }
 }
 
-fn parse_label_ref<'src>(mut ref_token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {
+fn parse_label_ref<'src>(ref_token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {
     assert!(ref_token.lexeme.starts_with('&'));
-    assert!(ref_token.lexeme.len() > 1);
+    let ident_token = next_symbol_token_as(&[TokenKind::Identifier], "identifier", &ref_token, tokens)?;
 
     if matches!(tokens.peek(), Some(t) if t.kind == TokenKind::ModuleSep) {
         let mod_sep = tokens.next().unwrap();
-
-        // TODO: Pretty sloppy, should just separate the lexeme from the reference
-        // as a struct member so callees don't have to think about it.
-
-        // strip the leading '&' for module parsing, then restore it
-        let amp_lexeme = ref_token.lexeme;
-        ref_token.lexeme = &ref_token.lexeme[1..];
-
-        let mod_ref = parse_module_ref(&ref_token, mod_sep, tokens)?;
-
-        ref_token.lexeme = amp_lexeme;
+        let mod_ref = parse_module_ref(&ident_token, mod_sep, tokens)?;
 
         Ok(Node {
-            kind: NodeKind::LabelRef(RefKind::ModuleRef(mod_ref)),
-            token: ref_token,
+            kind: NodeKind::LabelRef(LabelRef {
+                size: RefSize(32),
+                kind: RefKind::ModuleRef(mod_ref),
+            }),
+            token: ident_token,
         })
     } else {
         Ok(Node {
-            kind: NodeKind::LabelRef(RefKind::LocalRef),
-            token: ref_token,
+            kind: NodeKind::LabelRef(LabelRef {
+                size: RefSize(32),
+                kind: RefKind::LocalRef(MemberName(ident_token.lexeme.to_string())),
+            }),
+            token: ident_token,
         })
     }
 }
@@ -220,7 +215,7 @@ fn parse_label<'src>(label_token: Token<'src>) -> Result<Node<'src>> {
     Ok(node)
 }
 
-fn parse_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+fn parse_instruction<'src>(token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {
     assert!(matches!(token.kind, TokenKind::Identifier));
 
     let mut tmp_buf = [0u8; 8];
@@ -355,10 +350,11 @@ fn parse_pad_with_to_pseudo<'src>(pad_with_to_token: Token<'src>, tokens: &mut d
 fn parse_thumb_addr_pseudo<'src>(thumb_addr_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
     let lparen = next_symbol_token_as(&[TokenKind::LParen], "(", &thumb_addr_token, tokens)?;
     let reference = next_symbol_token_as(&[TokenKind::LabelRef], "&reference", &lparen, tokens)?;
-    let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &reference, tokens)?;
+    let ident = next_symbol_token_as(&[TokenKind::Identifier], "identifier", &reference, tokens)?;
+    let _rparen = next_symbol_token_as(&[TokenKind::RParen], ")", &ident, tokens)?;
 
     let node = Node {
-        kind: NodeKind::PseudoInstruction(PseudoInstruction::ThumbAddr { reference: reference.lexeme.to_string() }),
+        kind: NodeKind::PseudoInstruction(PseudoInstruction::ThumbAddr { reference: ident.lexeme.to_string() }),
         token: thumb_addr_token,
     };
 
@@ -988,20 +984,26 @@ fn parse_adds<'src>(adds_token: Token<'src>, tokens: &mut dyn Iterator<Item = To
     Ok(node)
 }
 
-fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+fn parse_branch<'src>(branch_token: Token<'src>, tokens: &mut Peekable<std::vec::IntoIter<Token<'src>>>) -> Result<Node<'src>> {
     let reference = next_symbol_token_as(&[TokenKind::LabelRef], "&reference", &branch_token, tokens)?;
+    let NodeKind::LabelRef(label_ref) = parse_label_ref(reference, tokens)?.kind else {
+        unreachable!()
+    };
     let node = Node {
-        kind: NodeKind::Instruction(Instruction::Branch { reference: reference.lexeme.to_string(), cond: None }),
+        kind: NodeKind::Instruction(Instruction::Branch { reference: label_ref, cond: None }),
         token: branch_token,
     };
 
     Ok(node)
 }
 
-fn parse_branch_with_link<'src>(branch_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+fn parse_branch_with_link<'src>(branch_token: Token<'src>, tokens: &mut Peekable<std::vec::IntoIter<Token<'src>>>) -> Result<Node<'src>> {
     let reference = next_symbol_token_as(&[TokenKind::LabelRef], "&reference", &branch_token, tokens)?;
+    let NodeKind::LabelRef(label_ref) = parse_label_ref(reference, tokens)?.kind else {
+        unreachable!()
+    };
     let node = Node {
-        kind: NodeKind::Instruction(Instruction::BranchWithLink { reference: reference.lexeme.to_string(), cond: None }),
+        kind: NodeKind::Instruction(Instruction::BranchWithLink { reference: label_ref, cond: None }),
         token: branch_token,
     };
 
@@ -1018,7 +1020,7 @@ fn parse_branch_exchange<'src>(bx_token: Token<'src>, tokens: &mut dyn Iterator<
     Ok(node)
 }
 
-fn parse_branch_eq<'src>(branch_eq_token: Token<'src>, tokens: &mut dyn Iterator<Item = Token<'src>>) -> Result<Node<'src>> {
+fn parse_branch_eq<'src>(branch_eq_token: Token<'src>, tokens: &mut Peekable<std::vec::IntoIter<Token<'src>>>) -> Result<Node<'src>> {
     let mut branch_node = parse_branch(branch_eq_token, tokens)?;
     let NodeKind::Instruction(Instruction::Branch { ref mut cond, .. }) = branch_node.kind else {
         unreachable!()

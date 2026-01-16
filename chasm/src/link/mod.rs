@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use crate::assemble::AssemblyModule;
 use crate::assemble::BaseOffset;
 use crate::assemble::BranchPatch;
+use crate::assemble::HexLiteral;
 use crate::assemble::ImportDefinitionRefPatch;
 use crate::assemble::ImportLabelRefPatch;
 use crate::assemble::LabelNewOffsetPatch;
@@ -28,11 +29,13 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
 
     let _ = main_module_index(&modules).map_err(|e| anyhow!("{LINK_ERR} {e}"))?;
 
-    let mut modules = modules.into_iter();
-    let main = modules.next().unwrap();
-    let mut main_bin = main.code;
-    let mut modules_to_offsets = HashMap::new();
-    // let mut module_pub_definitions = HashMap::new();
+    let modules = modules.into_iter();
+    let mut main_bin = Vec::new();
+    let mut modules_to_offsets      = HashMap::new();
+    let mut module_pub_definitions  = HashMap::new();
+    let mut all_module_labels       = HashMap::new();
+    let mut unresolved_defs         = HashMap::new();
+    let mut unresolved_labels      = HashMap::new();
 
     for mut module in modules {
         if modules_to_offsets.contains_key(&module.modname) {
@@ -44,21 +47,33 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
             **base_offset += main_bin.len();
         }
 
+        if ! module.pub_definitions.is_empty() {
+            module_pub_definitions.insert(module.modname.clone(), module.pub_definitions);
+        }
+
         for patch in module.linker_patches {
             match patch {
                 LinkerPatch::LabelNewOffset(new_offset_patch) => {
                     patch_label_offset(&mut module.code, new_offset_patch, main_bin.len())?;
                 }
                 LinkerPatch::ImportLabelRef(import_label_patch) => {
-                    patch_label_import(&mut module.code, import_label_patch)?;
+                    if let Some(patch) = patch_label_import(&mut module.code, import_label_patch, &all_module_labels)? {
+                        unresolved_labels.entry(module.modname.clone())
+                            .or_insert_with(Vec::new)
+                            .push(patch);
+                    }
                 },
                 LinkerPatch::ImportDefinitionRef(import_def_patch) => {
-                    patch_def_import(&mut module.code, import_def_patch)?;
+                    if let Some(patch) = patch_def_import(&mut module.code, import_def_patch, &module_pub_definitions)? {
+                        unresolved_defs.entry(module.modname.clone())
+                            .or_insert_with(Vec::new)
+                            .push(patch);
+                    }
                 },
-                LinkerPatch::BranchWithNewOffset(branch_patch) => {
+                LinkerPatch::BranchWithImport(branch_patch) => {
                     patch_branch_offset(&mut module.code, &module.labels, branch_patch, main_bin.len())?;
                 },
-                LinkerPatch::BranchLinkWithNewOffset(_branch_with_link_patch) => {
+                LinkerPatch::BranchLinkWithImport(_branch_with_link_patch) => {
                     // NO-OP - only module-local references are currently supported with branching
                 },
                 LinkerPatch::ThumbAddrPseudoWithNewOffset(thumb_addr_pseudo_patch) => {
@@ -67,27 +82,117 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
             }
         }
 
+        if ! module.labels.is_empty() {
+            all_module_labels.insert(module.modname.clone(), module.labels);
+        }
+
         modules_to_offsets.insert(module.modname, main_bin.len());
         main_bin.extend(module.code);
+    }
+
+    for (module, patches) in unresolved_defs {
+        let module_code = &mut main_bin[modules_to_offsets[&module]..];
+        for import_patch in patches {
+            let maybe_unresolved_patch = patch_def_import(module_code, import_patch, &module_pub_definitions)
+                .map_err(|e| anyhow!("{LINK_ERR} couldn't patch module '{}': {e}", module))?;
+            
+            if let Some(unresolved_patch) = maybe_unresolved_patch {
+                bail!("{LINK_ERR} unresolved patch in module '{}': {:?}", module, unresolved_patch);
+            }
+        }
+    }
+
+    for (module, patches) in unresolved_labels {
+        let module_code = &mut main_bin[modules_to_offsets[&module]..];
+        for label_patch in patches {
+            let maybe_unresolved_patch = patch_label_import(module_code, label_patch, &all_module_labels)
+                .map_err(|e| anyhow!("{LINK_ERR} couldn't patch module '{}': {e}", module))?;
+            
+            if let Some(unresolved_patch) = maybe_unresolved_patch {
+                bail!("{LINK_ERR} unresolved patch in module '{}': {:?}", module, unresolved_patch);
+            }
+        }
     }
 
     Ok(Binary(main_bin))
 }
 
+/// Applies a definition import patch to the module code.
+/// 
+/// If the import cannot be resolved, this function returns the patch, presumably to be
+/// attempted after all modules are processed.
 fn patch_def_import(
-    module_code: &mut Vec<u8>,
+    module_code: &mut [u8],
     import_patch: ImportDefinitionRefPatch,
-) -> Result<()> {
-    let ImportDefinitionRefPatch { patch_at, patch_size, import_module: ModuleRef { module, member } } = import_patch;
-    todo!()
+    module_pub_definitions: &HashMap<String, HashMap<String, HexLiteral>>,
+) -> Result<Option<ImportDefinitionRefPatch>> {
+    let ImportDefinitionRefPatch { patch_at, patch_size, import_module: ModuleRef { module, member } } = &import_patch;
+
+    let patch_at = patch_at.0;
+    if patch_at > module_code.len() {
+        bail!("patch offset {patch_at:?} is out of bounds (module code length {})", module_code.len());
+    } 
+
+    let patch_size = patch_size.as_n_bytes();
+    if patch_at + patch_size > module_code.len() {
+        bail!("patch size {} bytes at offset {patch_at:?} exceeds module code length {}", patch_size, module_code.len());
+    }
+
+    let maybe_val = module_pub_definitions
+        .get(module.as_ref())
+        .and_then(|defs| defs.get(member.as_ref()));
+
+    let Some(patch_val) = maybe_val else {
+        return Ok(Some(import_patch));
+    };
+
+    match patch_val {
+        HexLiteral::U32(v) => {
+            let bytes = v.to_le_bytes();
+            module_code[patch_at..patch_at + 4].copy_from_slice(&bytes);
+        },
+        HexLiteral::U16(v) => {
+            let bytes = v.to_le_bytes();
+            module_code[patch_at..patch_at + 2].copy_from_slice(&bytes);
+        },
+        HexLiteral::U8(v) => {
+            module_code[patch_at] = *v;
+        },
+    }
+    
+    Ok(None)
 }
 
 fn patch_label_import(
-    module_code: &mut Vec<u8>,
+    module_code: &mut [u8],
     import_patch: ImportLabelRefPatch,
-) -> Result<()> {
-    let ImportLabelRefPatch { patch_at, patch_size, import_module: ModuleRef { module, member } } = import_patch;
-    todo!()
+    all_module_labels: &HashMap<String, HashMap<String, BaseOffset>>,
+) -> Result<Option<ImportLabelRefPatch>> {
+    let ImportLabelRefPatch { patch_at, patch_size, import_module: ModuleRef { module, member } } = &import_patch;
+
+    let patch_at = patch_at.0;
+    if patch_at > module_code.len() {
+        bail!("patch offset {patch_at:?} is out of bounds (module code length {})", module_code.len());
+    } 
+
+    let patch_size = *patch_size as usize;
+    if patch_at + patch_size > module_code.len() {
+        bail!("patch size {} bytes at offset {patch_at:?} exceeds module code length {}", patch_size, module_code.len());
+    }
+
+    let maybe_val = all_module_labels
+        .get(module.as_ref())
+        .and_then(|labels| labels.get(member.as_ref()));
+
+    let Some(patch_val) = maybe_val else {
+        return Ok(Some(import_patch));
+    };
+
+    assert!(patch_size == 4, "only 32-bit label references are currently supported");
+    let patch_bytes = (**patch_val as u32).to_le_bytes();
+    module_code[patch_at..patch_at + 4].copy_from_slice(&patch_bytes);
+    
+    Ok(None)
 }
 
 fn patch_thumb_addr_offset(
@@ -213,7 +318,7 @@ pub struct Binary(Vec<u8>);
 
 #[cfg(test)]
 mod tests {
-    use crate::assemble::{BaseOffset, LabelNewOffsetPatch, PatchSize};
+    use crate::assemble::{BaseOffset, LabelNewOffsetPatch, LabelRef, MemberName, PatchSize, RefKind, RefSize};
 
     use super::*;
 
@@ -327,9 +432,9 @@ mod tests {
                 modname: "lib2".to_string(),
                 code: lib2_bin.clone(),
                 linker_patches: vec![
-                    LinkerPatch::BranchWithNewOffset(BranchPatch {
+                    LinkerPatch::BranchWithImport(BranchPatch {
                         patch_at: BaseOffset(2),
-                        reference: "&label".to_string(),
+                        reference: LabelRef { kind: RefKind::LocalRef(MemberName("label".to_string())), size: RefSize(32) },
                         cond: None
                     })
                 ],
@@ -357,7 +462,7 @@ mod tests {
                 linker_patches: vec![
                     LinkerPatch::ThumbAddrPseudoWithNewOffset(ThumbAddrPseudoPatch {
                         patch_at: 2.into(),
-                        reference: "&label".to_string()
+                        reference: "label".to_string()
                     })
                 ],
                 labels: HashMap::from_iter([("label".to_string(), BaseOffset(30))]),
@@ -367,6 +472,157 @@ mod tests {
         let mut exp_bin = main_bin;
         // (label base offset + main_bin len) | 1 = 231 (0xE7) to 32-bit little endian
         exp_bin.extend(vec![0x11, 0x11, 0xE7, 0x00, 0x00, 0x00]);
+
+        let bin = link(modules).unwrap();
+
+        assert_eq!(bin.0, exp_bin);
+    }
+
+    #[test]
+    fn definition_imports_are_patched_with_resolved_values() {
+        let main_bin_len = 50;
+        let main_bin = vec![0u8; main_bin_len];
+        let modules = vec![
+            AssemblyModule { 
+                modname: "main".to_string(), 
+                code: main_bin.clone(),
+                linker_patches: vec![
+                    // requires the second pass
+                    LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
+                        patch_at: BaseOffset(4),
+                        patch_size: RefSize(8),
+                        import_module: ModuleRef { module: "lib2".into(), member: "OTHER".into() }
+                    })
+                ],
+                ..Default::default() 
+            },
+            AssemblyModule { 
+                modname: "lib2".to_string(),
+                code: vec![0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22],
+                linker_patches: vec![
+                    // requires the second pass
+                    LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
+                        patch_at: BaseOffset(4),
+                        patch_size: RefSize(16),
+                        import_module: ModuleRef { module: "lib3".into(), member: "MYCONST".into() }
+                    })
+                ],
+                pub_definitions: HashMap::from_iter([
+                    ("MYCONST".to_string(), HexLiteral::U32(0x78563412)),
+                    ("OTHER".to_string(), HexLiteral::U8(0x12))
+                ]),
+                ..Default::default() 
+            },
+            AssemblyModule { 
+                modname: "lib3".to_string(), 
+                code: vec![0x11, 0x11, 0x11, 0x11],
+                pub_definitions: HashMap::from_iter([
+                    ("MYCONST".to_string(), HexLiteral::U16(0x9988))
+                ]),
+                linker_patches: vec![
+                    // requires the first pass
+                    LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
+                        patch_at: BaseOffset(0),
+                        patch_size: RefSize(32),
+                        import_module: ModuleRef { module: "lib2".into(), member: "MYCONST".into() }
+                    })
+                ],
+                ..Default::default() 
+            },
+        ];
+        let mut exp_bin = main_bin;
+        exp_bin[4] = 0x12;              // from the linker patch in main
+        exp_bin.extend(vec![
+            0x11, 0x11, 0x11, 0x11, 0x88, 0x99, 0x22, 0x22, // lib2 code
+            0x12, 0x34, 0x56, 0x78,                         // lib3 code
+        ]);
+
+        let bin = link(modules).unwrap();
+
+        assert_eq!(bin.0, exp_bin);
+    }
+
+    #[test]
+    fn definition_imports_that_are_unresolved_return_err() {
+        let main_bin_len = 8;
+        let main_bin = vec![0u8; main_bin_len];
+        let modules = vec![
+            AssemblyModule { 
+                modname: "main".to_string(), 
+                code: main_bin.clone(),
+                linker_patches: vec![
+                    // requires the second pass
+                    LinkerPatch::ImportDefinitionRef(ImportDefinitionRefPatch {
+                        patch_at: BaseOffset(4),
+                        patch_size: RefSize(8),
+                        import_module: ModuleRef { module: "lib2".into(), member: "OTHER".into() }
+                    })
+                ],
+                ..Default::default() 
+            },
+        ];
+
+        let err = link(modules).unwrap_err();
+
+        assert!(err.to_string().contains("unresolved patch in module 'main'"), "{}", err);
+    }
+
+    #[test]
+    fn label_imports_are_patched_with_resolved_values() {
+        let main_bin_len = 50;
+        let main_bin = vec![0u8; main_bin_len];
+        let lib2_bin = vec![0x11, 0x11, 0x11, 0x11, 0x22, 0x33, 0x33, 0x33];
+        let mut lib3_bin = vec![0x11, 0x11, 0x11, 0x11, 0x00, 0x00, 0x00, 0x00];
+        let modules = vec![
+            AssemblyModule { 
+                modname: "main".to_string(), 
+                code: main_bin.clone(),
+                linker_patches: vec![
+                    // requires the second pass
+                    LinkerPatch::ImportLabelRef(ImportLabelRefPatch {
+                        patch_at: BaseOffset(4),
+                        import_module: ModuleRef { module:"lib2".into(), member:"start".into() },
+                        patch_size: PatchSize::U32,
+                    })
+                ],
+                ..Default::default() 
+            },
+            AssemblyModule { 
+                modname: "lib2".to_string(),
+                code: lib2_bin.clone(),
+                labels: HashMap::from_iter([
+                    ("start".to_string(), BaseOffset(0)),
+                    ("func".to_string(), BaseOffset(4)),
+                ]),
+                ..Default::default() 
+            },
+            AssemblyModule { 
+                modname: "lib3".to_string(), 
+                code: lib3_bin.clone(),
+                linker_patches: vec![
+                    // requires the first pass
+                    LinkerPatch::ImportLabelRef(ImportLabelRefPatch {
+                        patch_at: BaseOffset(2),
+                        import_module: ModuleRef { module:"lib2".into(), member:"func".into() },
+                        patch_size: PatchSize::U32,
+                    })
+                ],
+                ..Default::default() 
+            },
+        ];
+
+        // Manually construct the expected binary
+        let mut exp_bin = main_bin;
+
+        // main
+        let exp_main_import_bytes = 50u32.to_le_bytes();
+        exp_bin[4..8].copy_from_slice(&exp_main_import_bytes);
+        // lib2
+        exp_bin.extend(lib2_bin);
+        // lib3
+        let exp_lib3_import_bytes = 54u32.to_le_bytes();
+        lib3_bin[2..6].copy_from_slice(&exp_lib3_import_bytes);
+        exp_bin.extend(lib3_bin);
 
         let bin = link(modules).unwrap();
 
