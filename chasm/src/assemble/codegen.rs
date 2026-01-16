@@ -703,7 +703,7 @@ fn generate_pad_with_to(
 
     Ok(())
 }
-fn generate_branch_with_link(
+pub (crate) fn generate_branch_with_link(
     reference: &LabelRef,
     cond: &Option<Condition>,
     output: &mut Vec<u8>,
@@ -724,11 +724,6 @@ fn generate_branch_with_link(
                 // no linker patch, we're doing it now
                 Some(addr) => *addr,
                 None => {
-                    if patch_offset.is_some() {
-                        // we're expected to be patching - if the label isn't present now then it never will be
-                        bail!("Undefined reference '{modref}'")
-                    }
-
                     should_linker_patch = true;
                     BaseOffset(output.len() + 4)
                 },
@@ -834,11 +829,6 @@ pub (crate) fn generate_branch(
                 // no linker patch, we're doing it now
                 Some(addr) => *addr,
                 None => {
-                    if patch_offset.is_some() {
-                        // we're expected to be patching - if the label isn't present now then it never will be
-                        bail!("Undefined reference '{modref}'")
-                    }
-
                     should_linker_patch = true;
                     BaseOffset(output.len() + 4)
                 },

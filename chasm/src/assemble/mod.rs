@@ -525,9 +525,9 @@ pub struct BranchPatch {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct BranchWithLinkPatch {
-    patch_at: BaseOffset,
-    reference: LabelRef,
-    cond: Option<Condition>,
+    pub patch_at: BaseOffset,
+    pub reference: LabelRef,
+    pub cond: Option<Condition>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
