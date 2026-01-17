@@ -34,9 +34,9 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 
                 tokens.push(t);
             }
-            '(' | ')' => {
-                let paren = tokenize_paren(source, i, line, &mut col);
-                tokens.push(paren);
+            '(' | ')' | '&' | '$' | ',' | '[' | ']' | '{' | '}' => {
+                let symbol = tokenize_known_symbol(source, i, line, &mut col);
+                tokens.push(symbol);
             }
             'x' => {
                 // hex literal
@@ -47,22 +47,6 @@ pub(crate) fn tokenize(source: &AssemblySource) -> Result<AssemblyTokens<'_>> {
                 // label
                 let label_token = tokenize_label(source, &mut chars, i, line, &mut col)?;
                 tokens.push(label_token);
-            }
-            '&' | '$' => {
-                let ref_token = tokenize_ref(source, i, line, &mut col);
-                tokens.push(ref_token);
-            }
-            ',' => {
-                let comma_token = tokenize_comma(source, i, line, &mut col);
-                tokens.push(comma_token);
-            }
-            '[' | ']' => {
-                let bracket = tokenize_bracket(source, i, line, &mut col);
-                tokens.push(bracket);
-            }
-            '{' | '}' => {
-                let curly = tokenize_curly(source, i, line, &mut col);
-                tokens.push(curly);
             }
             c if c.is_ascii_digit() => {
                 let digits = tokenize_digits(source, &mut chars, i, line, &mut col)?;
@@ -100,54 +84,6 @@ fn skip_comment(
     }
 }
 
-fn tokenize_curly<'src>(
-    source: &'src AssemblySource,
-    start_index: usize,
-    line: usize,
-    col: &mut usize,
-) ->Token<'src> {
-    let lexeme = &source[start_index..start_index + 1];
-    let kind = match &lexeme[..] {
-        "{" => TokenKind::LCurly,
-        "}" => TokenKind::RCurly,
-        _ => unreachable!(),
-    }; 
-    let t = Token {
-        kind,
-        lexeme,
-        line,
-        column: *col,
-        source,
-    };
-
-    *col += 1;
-    t
-}
-
-fn tokenize_bracket<'src>(
-    source: &'src AssemblySource,
-    start_index: usize,
-    line: usize,
-    col: &mut usize,
-) ->Token<'src> {
-    let lexeme = &source[start_index..start_index + 1];
-    let kind = match &lexeme[..] {
-        "[" => TokenKind::LBracket,
-        "]" => TokenKind::RBracket,
-        _ => unreachable!(),
-    }; 
-    let t = Token {
-        kind,
-        lexeme,
-        line,
-        column: *col,
-        source,
-    };
-
-    *col += 1;
-    t
-}
-
 fn tokenize_colon<'src>(
     source: &'src AssemblySource,
     start_index: usize,
@@ -171,39 +107,28 @@ fn tokenize_colon<'src>(
     t
 }
 
-fn tokenize_paren<'src>(
+fn tokenize_known_symbol<'src>(
     source: &'src AssemblySource,
     start_index: usize,
     line: usize,
     col: &mut usize,
 ) ->Token<'src> {
     let lexeme = &source[start_index..start_index + 1];
-    let kind = match &lexeme[..] {
+    let kind = match lexeme {
         "(" => TokenKind::LParen,
         ")" => TokenKind::RParen,
-        _ => unreachable!(),
-    }; 
-    let t = Token {
-        kind,
-        lexeme,
-        line,
-        column: *col,
-        source,
+        "&" => TokenKind::LabelRef,
+        "$" => TokenKind::DefinedRef,
+        "," => TokenKind::Comma,
+        "[" => TokenKind::LBracket,
+        "]" => TokenKind::RBracket,
+        "{" => TokenKind::LCurly,
+        "}" => TokenKind::RCurly,
+        other => panic!("unrecognized symbol {other}")
     };
 
-    *col += 1;
-    t
-}
-
-fn tokenize_comma<'src>(
-    source: &'src AssemblySource,
-    start_index: usize,
-    line: usize,
-    col: &mut usize,
-) ->Token<'src> {
-    let lexeme = &source[start_index..start_index + 1];
     let t = Token {
-        kind: TokenKind::Comma,
+        kind,
         lexeme,
         line,
         column: *col,
@@ -279,30 +204,6 @@ fn tokenize_identifier<'src>(
     };
 
     Ok(t)
-}
-
-fn tokenize_ref<'src>(
-    source: &'src AssemblySource,
-    start_index: usize,
-    line: usize,
-    col: &mut usize,
-) ->Token<'src> {
-    let lexeme = &source[start_index..start_index + 1];
-    let kind = match lexeme {
-        "&" => TokenKind::LabelRef,
-        "$" => TokenKind::DefinedRef,
-        _ => unreachable!(),
-    }; 
-    let t = Token {
-        kind,
-        lexeme,
-        line,
-        column: *col,
-        source,
-    };
-
-    *col += 1;
-    t
 }
 
 fn tokenize_module_sep<'src>(
