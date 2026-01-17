@@ -2,17 +2,12 @@
 //! 
 //! ARMv7 generated using https://developer.arm.com/documentation/ddi0403/ee.
 
-use std::{collections::{HashMap, HashSet}, ops::Deref};
+use std::{cell::Ref, collections::{HashMap, HashSet}, ops::Deref};
 
 use anyhow::{bail, Result};
 
 use crate::assemble::{
-    AssemblerPatch, AssemblyAst, AssemblyModule, BaseOffset, BranchPatch,
-    BranchWithLinkPatch, Condition, DefinitionRef, GeneralRegister, HexLiteral,
-    ImportDefinitionRefPatch, ImportLabelRefPatch, Instruction,
-    LabelNewOffsetPatch, LabelRef, LinkerPatch, ModuleName, NodeKind, PatchSize,
-    PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind,
-    ThumbAddrPseudoPatch
+    AssemblerPatch, AssemblyAst, AssemblyModule, BaseOffset, BranchPatch, BranchWithLinkPatch, Condition, DefinitionRef, GeneralRegister, HexLiteral, ImportDefinitionRefPatch, ImportLabelRefPatch, Instruction, LabelNewOffsetPatch, LabelRef, LinkerPatch, ModuleName, NodeKind, PatchSize, PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind, RefSize, ThumbAddrPseudoPatch
 };
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
@@ -66,7 +61,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                                     unpatched_value: *addr,
                                 });
                                 linker_patches.push(patch);
-                                generate_ref(*addr as u32, &mut code);
+                                generate_ref_32(*addr as u32, &mut code);
                             }
                             None => {
                                 // We won't emit a linker patch until we know if the label is present in the module or not
@@ -78,7 +73,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                                     }
                                 }
 
-                                generate_ref(REF_PLACEHOLDER, &mut code);
+                                generate_ref_32(REF_PLACEHOLDER, &mut code);
                             }
                         }
                     }
@@ -94,7 +89,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                         });
 
                         linker_patches.push(patch);
-                        generate_ref(REF_PLACEHOLDER, &mut code);
+                        generate_ref_32(REF_PLACEHOLDER, &mut code);
                     }
                 }
             }
@@ -121,8 +116,12 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
                         });
 
                         linker_patches.push(patch);
-                        generate_ref(REF_PLACEHOLDER, &mut code);
-
+                        match size {
+                            RefSize(32) => generate_ref_32(REF_PLACEHOLDER, &mut code),
+                            RefSize(16) => generate_ref_16(REF_PLACEHOLDER as u16, &mut code),
+                            RefSize(8) => generate_ref_8(REF_PLACEHOLDER as u8, &mut code),
+                            RefSize(other) => todo!("Unsupported definition ref size: {}", other),
+                        }
                     }
                 }
             }
@@ -216,8 +215,16 @@ fn generate_hex_literal(lit: &HexLiteral, output: &mut Vec<u8>) {
     }
 }
 
-fn generate_ref(addr: u32, output: &mut Vec<u8>) {
-    output.extend(&addr.to_le_bytes());
+fn generate_ref_32(val: u32, output: &mut Vec<u8>) {
+    output.extend(&val.to_le_bytes());
+}
+
+fn generate_ref_16(val: u16, output: &mut Vec<u8>) {
+    output.extend(&val.to_le_bytes());
+}
+
+fn generate_ref_8(val: u8, output: &mut Vec<u8>) {
+    output.push(val);
 }
 #[allow(clippy::unusual_byte_groupings)]
 fn generate_pseudo_instruction(

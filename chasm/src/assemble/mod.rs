@@ -1777,4 +1777,40 @@ mod tests {
         assert_eq!(module.linker_patches[0], exp_patch);
         assert_eq!(module.linker_patches.len(), 1);
     }
+
+    #[test]
+    fn definition_ref_as_8bit_import_get_placeholder_generated_with_specified_width() {
+        let source = AssemblySource::from("
+            import!(my-mod)
+            $8:my-mod::BYTE-CONST
+        ".to_string());
+
+        let machine_code = assemble_source("test", &source).unwrap();
+
+        assert_eq!(machine_code.code.len(), 1);
+    }
+
+    #[test]
+    fn definition_ref_as_16bit_import_get_placeholder_generated_with_specified_width() {
+        let source = AssemblySource::from("
+            import!(my-mod)
+            $16:my-mod::CONST
+        ".to_string());
+
+        let machine_code = assemble_source("test", &source).unwrap();
+
+        assert_eq!(machine_code.code.len(), 2);
+    }
+
+    #[test]
+    fn definition_ref_as_32bit_import_get_placeholder_generated_with_specified_width() {
+        let source = AssemblySource::from("
+            import!(my-mod)
+            $32:my-mod::CONST
+        ".to_string());
+
+        let machine_code = assemble_source("test", &source).unwrap();
+
+        assert_eq!(machine_code.code.len(), 4);
+    }
 }
