@@ -9,7 +9,7 @@ fn main() -> Result<()> {
 
     match args.command {
         Assemble(assemble_args) => {
-            asm::assemble(&assemble_args)
+            asm::assemble(assemble_args)
         }
     }
 }

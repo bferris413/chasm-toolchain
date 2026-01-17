@@ -3,29 +3,53 @@ mod token;
 pub (crate) mod codegen;
 mod helpers;
 
-use std::{borrow::Borrow, collections::{HashMap, HashSet}, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}};
+use std::{borrow::Borrow, collections::{HashMap, HashSet}, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}, path::PathBuf};
 
 use crate::{assemble::helpers::normalize_to_ascii_lower, AssembleArgs};
+use crate::link;
 use token::tokenize;
 use parse::parse;
 use codegen::codegen;
 
 use anyhow::{anyhow, bail, Context, Error, Result};
 
-pub fn assemble(args: &AssembleArgs) -> Result<()> {
-    let modname = args.file
-        .file_stem()
-        .ok_or_else(|| anyhow!("Failed to get filename from '{}'", args.file.display()))
-        .map(|file_stem| file_stem.to_string_lossy())?;
+pub fn assemble(args: AssembleArgs) -> Result<()> {
+    let mut modules = Vec::new();
 
-    let assembly_module = fs::read_to_string(&args.file)
-        .with_context(|| format!("Failed to read assembly file '{}'", &args.file.display()))
-        .map(|source| source.into())
-        .and_then(|s| assemble_source(modname, &s))?;
+    if args.files.is_empty() {
+        bail!("No input files provided to assemble");
+    }
 
-    let outfile = args.file.with_extension("bin");
-    fs::write(&outfile, &assembly_module.code)
-        .with_context(|| format!("Failed to write binary file '{}'", outfile.display()))?;
+    for file in args.files {
+        let modname = file
+            .file_stem()
+            .ok_or_else(|| anyhow!("Failed to get filename from '{}'", file.display()))
+            .map(|file_stem| file_stem.to_string_lossy())?;
+
+        let assembly_module = fs::read_to_string(&file)
+            .with_context(|| format!("Failed to read assembly file '{}'", file.display()))
+            .map(|source| source.into())
+            .and_then(|s| assemble_source(modname, &s))?;
+
+        modules.push((file, assembly_module));
+    }
+
+    if args.no_link {
+        for (file, assembly_module) in modules {
+            let outfile = file.with_extension("bin");
+            fs::write(&outfile, &assembly_module.code)
+                .with_context(|| format!("Failed to write binary file '{}'", outfile.display()))?;
+        }
+    } else {
+        put_main_in_front(&mut modules)?;
+        let main_file = modules[0].0.clone();
+        let modules = modules.into_iter().map(|(_, module)| module).collect();
+        let bin = link::link(modules)?;
+
+        let outfile = main_file.with_extension("bin");
+        fs::write(&outfile, &bin.0)
+            .with_context(|| format!("Failed to write binary file '{}'", outfile.display()))?;
+    }
 
     Ok(())
 }
@@ -34,6 +58,18 @@ fn assemble_source(modname: impl AsRef<str>, source: &AssemblySource) -> Result<
     tokenize(source)
         .and_then(parse)
         .and_then(|ast| codegen(modname, ast))
+}
+
+fn put_main_in_front(modules: &mut Vec<(PathBuf, AssemblyModule)>) -> Result<()> {
+    let main_index = modules.iter()
+        .position(|(_, module)| module.modname == "main")
+        .ok_or_else(|| anyhow!("No 'main' module found; cannot link without an entry point"))?;
+
+    if main_index != 0 {
+        modules.swap(0, main_index);
+    }
+
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -97,6 +133,7 @@ pub struct DefinitionRef {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct RefSize(pub usize);
 impl RefSize {
+    /// Returns the size of the reference in bytes.
     pub fn as_n_bytes(&self) -> usize {
         self.0 / 8
     }

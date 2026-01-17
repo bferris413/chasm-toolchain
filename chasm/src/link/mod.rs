@@ -399,7 +399,7 @@ fn main_module_index(modules: &[AssemblyModule]) -> Result<usize> {
 }
 
 #[derive(Debug)]
-pub struct Binary(Vec<u8>);
+pub struct Binary(pub Vec<u8>);
 
 #[cfg(test)]
 mod tests {
