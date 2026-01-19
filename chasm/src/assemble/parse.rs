@@ -238,7 +238,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut Peekable<IntoIter<To
         "str" => parse_str(token, tokens),
         other if Register::try_from(other).is_ok() => {
             let err = AssemblyError::new(
-                format!("Expected instruction mnemonic, found register '{}'", token.lexeme),
+                format!("Unexpected register '{}'", token.lexeme),
                 token.line,
                 token.column,
                 Some(token.column + token.lexeme.len()),
@@ -249,7 +249,7 @@ fn parse_instruction<'src>(token: Token<'src>, tokens: &mut Peekable<IntoIter<To
         }
         other => {
             let err = AssemblyError::new(
-                format!("Expected instruction mnemonic, found unknown identifier '{}'", token.lexeme),
+                format!("Unknown identifier '{}'", token.lexeme),
                 token.line,
                 token.column,
                 Some(token.column + other.len()),
@@ -276,7 +276,7 @@ fn parse_pseudo_instruction<'src>(token: Token<'src>, tokens: &mut dyn Iterator<
         "import!" => parse_import_pseudo(token, tokens),
         other => {
             let err = AssemblyError::new(
-                format!("Found unknown pseudo-instruction '{}'", token.lexeme),
+                format!("Unknown pseudo-instruction '{}'", token.lexeme),
                 token.line,
                 token.column,
                 Some(token.column + other.len()),

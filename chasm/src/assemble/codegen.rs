@@ -2,7 +2,7 @@
 //! 
 //! ARMv7 generated using https://developer.arm.com/documentation/ddi0403/ee.
 
-use std::{cell::Ref, collections::{HashMap, HashSet}, ops::Deref};
+use std::{collections::{HashMap, HashSet}, ops::Deref};
 
 use anyhow::{bail, Result};
 
