@@ -7,7 +7,7 @@ use std::{collections::{HashMap, HashSet}, ops::Deref};
 use anyhow::{bail, Result};
 
 use crate::assemble::{
-    AssemblerPatch, AssemblyAst, AssemblyModule, BaseOffset, BranchPatch, BranchWithLinkPatch, Condition, DefinitionRef, GeneralRegister, HexLiteral, ImportDefinitionRefPatch, ImportLabelRefPatch, Instruction, LabelNewOffsetPatch, LabelRef, LinkerPatch, ModuleName, NodeKind, PatchSize, PoppableRegister, PseudoInstruction, PushableRegister, RawPatch, RefKind, RefSize, ThumbAddrPseudoPatch
+    AssemblerPatch, AssemblyAst, AssemblyModule, BaseOffset, BranchPatch, BranchWithLinkPatch, Condition, DefinitionRef, GeneralRegister, HexLiteral, ImportDefinitionRefPatch, ImportLabelRefPatch, Instruction, LabelNewOffsetPatch, LabelRef, LinkerPatch, ModuleName, NodeKind, PatchSize, PoppableRegister, PseudoInstruction, Public, PushableRegister, RawPatch, RefKind, RefSize, ThumbAddrPseudoPatch
 };
 
 const REF_PLACEHOLDER: u32 = 0x21436587;
@@ -44,17 +44,26 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
             NodeKind::Label => {
                 let label = &node.token.lexeme[1..]; // strip '@'
 
-                if let Some(old_addr) = labels.get(label) {
+                if let Some((_, old_addr)) = labels.get(label) {
                     bail!("Duplicate label '{label}', old address is {:02X}, new address is {:02X}", old_addr.deref(), code.len());
                 }
 
-                labels.insert(label.to_string(), BaseOffset(code.len()));
+                labels.insert(label.to_string(), (false, BaseOffset(code.len())));
+            }
+            NodeKind::PublicLabel => {
+                let label = &node.token.lexeme[5..]; // strip '@pub '
+
+                if let Some((_, old_addr)) = labels.get(label) {
+                    bail!("Duplicate label '{label}', old address is {:02X}, new address is {:02X}", old_addr.deref(), code.len());
+                }
+
+                labels.insert(label.to_string(), (true, BaseOffset(code.len())));
             }
             NodeKind::LabelRef(LabelRef { kind, size: _ }) => {
                 match kind {
                     RefKind::LocalRef(member) => {
                         match labels.get(&member.0) {
-                            Some(&addr) => {
+                            Some(&(_, addr)) => {
                                 let patch = LinkerPatch::LabelNewOffset(LabelNewOffsetPatch {
                                     patch_at: code.len().into(),
                                     patch_size: PatchSize::U32,
@@ -132,7 +141,7 @@ pub(crate) fn codegen(modname: impl AsRef<str>, ast: AssemblyAst<'_>) -> Result<
     // resolve forward references and do local patches
     for (r, patches) in local_patches.into_iter() {
         let target_addr = match labels.get(&r) {
-            Some(&addr) => *addr as u32,
+            Some(&(_, addr)) => *addr as u32,
             None => bail!("Undefined reference '&{r}'"),
         };
 
@@ -230,7 +239,7 @@ fn generate_ref_8(val: u8, output: &mut Vec<u8>) {
 fn generate_pseudo_instruction(
     pseudo: PseudoInstruction,
     output: &mut Vec<u8>,
-    labels: &HashMap<String, BaseOffset>,
+    labels: &HashMap<String, (Public, BaseOffset)>,
     unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
     definitions: &mut HashMap<String, HexLiteral>,
     pub_definitions: &mut HashMap<String, HexLiteral>,
@@ -281,7 +290,7 @@ fn generate_pseudo_instruction(
 fn generate_instruction(
     instr: Instruction,
     output: &mut Vec<u8>,
-    labels: &HashMap<String, BaseOffset>,
+    labels: &HashMap<String, (Public, BaseOffset)>,
     unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
     linker_patches: &mut Vec<LinkerPatch>,
 ) -> Result<()> {
@@ -656,12 +665,12 @@ fn generate_define(
 pub (crate) fn generate_thumb_addr_pseudo(
     reference: &str,
     output: &mut Vec<u8>,
-    labels: &HashMap<String, BaseOffset>,
+    labels: &HashMap<String, (Public, BaseOffset)>,
     unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
     is_patch: bool,
 ) -> Result<()> {
     let target_addr = match labels.get(reference) {
-        Some(addr) => *addr,
+        Some((_, addr)) => *addr,
         None => {
             if is_patch {
                 // we're expected to be patching - if the label isn't present now then it never will be
@@ -697,7 +706,7 @@ fn generate_pad_with_to(
 
     // Unused now, but we'll likely allow padding to label addresses in the near future,
     // which implies reference lookups and patching.
-    _labels: &HashMap<String, BaseOffset>,
+    _labels: &HashMap<String, (Public, BaseOffset)>,
     _unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
     _patch_offset: Option<BaseOffset>,
 ) -> Result<()> {
@@ -714,8 +723,8 @@ pub (crate) fn generate_branch_with_link(
     reference: &LabelRef,
     cond: &Option<Condition>,
     output: &mut Vec<u8>,
-    local_labels: &HashMap<String, BaseOffset>,
-    module_labels: &HashMap<String, HashMap<String, BaseOffset>>,
+    local_labels: &HashMap<String, (Public, BaseOffset)>,
+    module_labels: &HashMap<String, HashMap<String, (Public, BaseOffset)>>,
     unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
     patch_offset: Option<BaseOffset>,
 ) -> Result<bool> {
@@ -729,7 +738,7 @@ pub (crate) fn generate_branch_with_link(
 
             match maybe_val {
                 // no linker patch, we're doing it now
-                Some(addr) => *addr,
+                Some((_, addr)) => *addr,
                 None => {
                     should_linker_patch = true;
                     BaseOffset(output.len() + 4)
@@ -738,7 +747,7 @@ pub (crate) fn generate_branch_with_link(
         }
         RefKind::LocalRef(local_ref) => {
             match local_labels.get(&local_ref.0) {
-                Some(addr) => {
+                Some((_, addr)) => {
                     should_linker_patch = true;
                     *addr
                 }
@@ -819,8 +828,8 @@ pub (crate) fn generate_branch(
     reference: &LabelRef,
     cond: &Option<Condition>,
     output: &mut Vec<u8>,
-    local_labels: &HashMap<String, BaseOffset>,
-    module_labels: &HashMap<String, HashMap<String, BaseOffset>>,
+    local_labels: &HashMap<String, (Public, BaseOffset)>,
+    module_labels: &HashMap<String, HashMap<String, (Public, BaseOffset)>>,
     unresolved_refs: &mut HashMap<String, Vec<AssemblerPatch>>,
     patch_offset: Option<BaseOffset>,
 ) -> Result<bool> {
@@ -834,7 +843,7 @@ pub (crate) fn generate_branch(
 
             match maybe_val {
                 // no linker patch, we're doing it now
-                Some(addr) => *addr,
+                Some((_, addr)) => *addr,
                 None => {
                     should_linker_patch = true;
                     BaseOffset(output.len() + 4)
@@ -843,7 +852,7 @@ pub (crate) fn generate_branch(
         }
         RefKind::LocalRef(local_ref) => {
             match local_labels.get(&local_ref.0) {
-                Some(addr) => {
+                Some((_, addr)) => {
                     should_linker_patch = true;
                     *addr
                 }

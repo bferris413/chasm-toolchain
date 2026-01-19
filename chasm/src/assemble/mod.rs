@@ -106,6 +106,7 @@ enum NodeKind {
     Label,
     LabelRef(LabelRef),
     DefinitionRef(DefinitionRef),
+    PublicLabel,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -455,11 +456,12 @@ impl Display for MemberName {
     }
 }
 
+pub type Public = bool;
 #[derive(Debug, Default)]
 pub struct AssemblyModule {
     pub (crate) modname: String,
     pub (crate) code: Vec<u8>,
-    pub (crate) labels: HashMap<String, BaseOffset>,
+    pub (crate) labels: HashMap<String, (Public, BaseOffset)>,
     pub (crate) definitions: HashMap<String, HexLiteral>,
     pub (crate) pub_definitions: HashMap<String, HexLiteral>,
     pub (crate) imports: HashSet<ModuleName>,
@@ -602,6 +604,7 @@ enum TokenKind {
     ModuleSep,
     Colon,
     Digits,
+    PublicLabel,
 }
 impl Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -612,6 +615,7 @@ impl Display for TokenKind {
             TokenKind::HexLiteralU8 => write!(f, "hex literal (u8)"),
             TokenKind::Identifier => write!(f, "identifier"),
             TokenKind::Label => write!(f, "label"),
+            TokenKind::PublicLabel => write!(f, "public label"),
             TokenKind::LBracket => write!(f, "left bracket"),
             TokenKind::RBracket => write!(f, "right bracket"),
             TokenKind::LCurly => write!(f, "left curly"),
@@ -846,14 +850,14 @@ mod tests {
 
         let machine_code = assemble_source("test", &source).unwrap();
 
-        assert_eq!(machine_code.labels.get("label"), Some(&BaseOffset(2)));
+        assert_eq!(machine_code.labels.get("label"), Some(&(false, BaseOffset(2))));
     }
 
     #[test]
     fn label_duplicate_returns_error() {
         let source = AssemblySource::from("
             MOVS R0 x01
-            @label
+            @pub label
             MOVS R1 x02
             @label
         ".to_string());
@@ -867,7 +871,7 @@ mod tests {
     fn label_stores_multiple_labels() {
         let source = AssemblySource::from("
             MOVS R0 x01
-            @label
+            @pub label
             
             
             ADDS R1 x02
@@ -876,8 +880,8 @@ mod tests {
 
         let machine_code = assemble_source("test", &source).unwrap();
 
-        assert_eq!(machine_code.labels.get("label"), Some(&BaseOffset(2)));
-        assert_eq!(machine_code.labels.get("loop"), Some(&BaseOffset(4)));
+        assert_eq!(machine_code.labels.get("label"), Some(&(true, BaseOffset(2))));
+        assert_eq!(machine_code.labels.get("loop"), Some(&(false, BaseOffset(4))));
     }
 
     #[test]
@@ -1849,5 +1853,23 @@ mod tests {
         let machine_code = assemble_source("test", &source).unwrap();
 
         assert_eq!(machine_code.code.len(), 4);
+    }
+
+    #[test]
+    fn public_labels_can_be_defined_and_referenced() {
+        let source = AssemblySource::from("
+            &myfunc
+            x1111.1111
+            @pub myfunc
+        ".to_string());
+
+        let module = assemble_source("test", &source).unwrap();
+
+        assert_eq!(module.code, vec![
+            0x08, 0x00, 0x00, 0x00, // address of myfunc
+            0x11, 0x11, 0x11, 0x11,
+        ]);
+
+        assert_eq!(module.labels.get("myfunc"), Some(&(true, BaseOffset(8))));
     }
 }

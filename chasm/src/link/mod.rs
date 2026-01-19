@@ -12,6 +12,7 @@ use crate::assemble::LabelNewOffsetPatch;
 use crate::assemble::LinkerPatch;
 use crate::assemble::ModuleRef;
 use crate::assemble::PatchSize;
+use crate::assemble::Public;
 use crate::assemble::RefKind;
 use crate::assemble::ThumbAddrPseudoPatch;
 use crate::assemble::codegen;
@@ -35,7 +36,7 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
     let mut main_bin = Vec::new();
     let mut modules_to_offsets      = HashMap::new();
     let mut module_pub_definitions  = HashMap::new();
-    let mut all_module_labels       = HashMap::new();
+    let mut all_public_labels       = HashMap::new();
     let mut unresolved_defs         = HashMap::new();
     let mut unresolved_labels       = HashMap::new();
     let mut unresolved_branches     = HashMap::new();
@@ -47,7 +48,7 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
         }
 
         // fix up label offsets within the module to point to new location in binary
-        for (_, base_offset) in module.labels.iter_mut() {
+        for (_, (_pub, base_offset)) in module.labels.iter_mut() {
             **base_offset += main_bin.len();
         }
 
@@ -61,7 +62,7 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
                     patch_label_offset(&mut module.code, new_offset_patch, main_bin.len())?;
                 }
                 LinkerPatch::ImportLabelRef(import_label_patch) => {
-                    if let Some(patch) = patch_label_import(&mut module.code, import_label_patch, &all_module_labels)? {
+                    if let Some(patch) = patch_label_import(&mut module.code, import_label_patch, &all_public_labels)? {
                         unresolved_labels.entry(module.modname.clone())
                             .or_insert_with(Vec::new)
                             .push(patch);
@@ -75,14 +76,14 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
                     }
                 },
                 LinkerPatch::BranchWithImport(branch_patch) => {
-                    if let Some(patch) = patch_branch(&mut module.code, &all_module_labels, branch_patch, main_bin.len())? {
+                    if let Some(patch) = patch_branch(&mut module.code, &all_public_labels, branch_patch, main_bin.len())? {
                         unresolved_branches.entry(module.modname.clone())
                             .or_insert_with(Vec::new)
                             .push(patch);
                     }
                 },
                 LinkerPatch::BranchLinkWithImport(branch_with_link_patch) => {
-                    if let Some(patch) = patch_branch_with_link(&mut module.code, &all_module_labels, branch_with_link_patch, main_bin.len())? {
+                    if let Some(patch) = patch_branch_with_link(&mut module.code, &all_public_labels, branch_with_link_patch, main_bin.len())? {
                         unresolved_branch_with_links.entry(module.modname.clone())
                             .or_insert_with(Vec::new)
                             .push(patch);
@@ -94,8 +95,10 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
             }
         }
 
-        if ! module.labels.is_empty() {
-            all_module_labels.insert(module.modname.clone(), module.labels);
+        let public_labels = module.labels.into_iter().filter(|(_, (ispub, _))| *ispub).collect::<HashMap<_, _>>();
+
+        if ! public_labels.is_empty() {
+            all_public_labels.insert(module.modname.clone(), public_labels);
         }
 
         modules_to_offsets.insert(module.modname, main_bin.len());
@@ -117,7 +120,7 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
     for (module, patches) in unresolved_labels {
         let module_code = &mut main_bin[modules_to_offsets[&module]..];
         for label_patch in patches {
-            let maybe_unresolved_patch = patch_label_import(module_code, label_patch, &all_module_labels)
+            let maybe_unresolved_patch = patch_label_import(module_code, label_patch, &all_public_labels)
                 .map_err(|e| anyhow!("{LINK_ERR} couldn't patch module '{}': {e}", module))?;
             
             if let Some(unresolved_patch) = maybe_unresolved_patch {
@@ -130,7 +133,7 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
         let module_code = &mut main_bin[modules_to_offsets[&module]..];
         let offset_by = modules_to_offsets[&module];
         for branch_patch in patches {
-            let maybe_unresolved_patch = patch_branch(module_code, &all_module_labels, branch_patch, offset_by)
+            let maybe_unresolved_patch = patch_branch(module_code, &all_public_labels, branch_patch, offset_by)
                 .map_err(|e| anyhow!("{LINK_ERR} couldn't patch module '{}': {e}", module))?;
 
             if let Some(unresolved_patch) = maybe_unresolved_patch {
@@ -143,7 +146,7 @@ pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
         let module_code = &mut main_bin[modules_to_offsets[&module]..];
         let offset_by = modules_to_offsets[&module];
         for branch_patch in patches {
-            let maybe_unresolved_patch = patch_branch_with_link(module_code, &all_module_labels, branch_patch, offset_by)
+            let maybe_unresolved_patch = patch_branch_with_link(module_code, &all_public_labels, branch_patch, offset_by)
                 .map_err(|e| anyhow!("{LINK_ERR} couldn't patch module '{}': {e}", module))?;
 
             if let Some(unresolved_patch) = maybe_unresolved_patch {
@@ -204,7 +207,7 @@ fn patch_def_import(
 fn patch_label_import(
     module_code: &mut [u8],
     import_patch: ImportLabelRefPatch,
-    all_module_labels: &HashMap<String, HashMap<String, BaseOffset>>,
+    all_module_labels: &HashMap<String, HashMap<String, (Public, BaseOffset)>>,
 ) -> Result<Option<ImportLabelRefPatch>> {
     let ImportLabelRefPatch { patch_at, patch_size, import_module: ModuleRef { module, member } } = &import_patch;
 
@@ -222,9 +225,11 @@ fn patch_label_import(
         .get(module.as_ref())
         .and_then(|labels| labels.get(member.as_ref()));
 
-    let Some(patch_val) = maybe_val else {
+    let Some((is_pub, patch_val)) = maybe_val else {
         return Ok(Some(import_patch));
     };
+
+    assert!(is_pub);
 
     assert!(patch_size == 4, "only 32-bit label references are currently supported");
     let patch_bytes = (**patch_val as u32).to_le_bytes();
@@ -235,7 +240,7 @@ fn patch_label_import(
 
 fn patch_thumb_addr_offset(
     module_code: &mut Vec<u8>,
-    labels: &HashMap<String, BaseOffset>,
+    labels: &HashMap<String, (Public, BaseOffset)>,
     thumb_addr_patch: ThumbAddrPseudoPatch,
 ) -> Result<()> {
     let ThumbAddrPseudoPatch { patch_at, reference } = thumb_addr_patch;
@@ -261,7 +266,7 @@ fn patch_thumb_addr_offset(
 
 fn patch_branch_with_link(
     module_code: &mut [u8],
-    all_module_labels: &HashMap<String, HashMap<String, BaseOffset>>,
+    all_module_labels: &HashMap<String, HashMap<String, (Public, BaseOffset)>>,
     branch_patch: BranchWithLinkPatch,
     offset_by: usize
 ) -> Result<Option<BranchWithLinkPatch>> {
@@ -300,7 +305,7 @@ fn patch_branch_with_link(
 
 fn patch_branch(
     module_code: &mut [u8],
-    all_module_labels: &HashMap<String, HashMap<String, BaseOffset>>,
+    all_module_labels: &HashMap<String, HashMap<String, (Public, BaseOffset)>>,
     branch_patch: BranchPatch,
     offset_by: usize
 ) -> Result<Option<BranchPatch>> {
@@ -523,7 +528,7 @@ mod tests {
                         cond: None
                     })
                 ],
-                labels: HashMap::from_iter([("label".to_string(), BaseOffset(200))]),
+                labels: HashMap::from_iter([("label".to_string(), (false, BaseOffset(200)))]),
                 ..Default::default() },
         ];
 
@@ -550,7 +555,7 @@ mod tests {
                         reference: "label".to_string()
                     })
                 ],
-                labels: HashMap::from_iter([("label".to_string(), BaseOffset(30))]),
+                labels: HashMap::from_iter([("label".to_string(), (false, BaseOffset(30)))]),
                 ..Default::default()
             },
         ];
@@ -676,8 +681,8 @@ mod tests {
                 modname: "lib2".to_string(),
                 code: lib2_bin.clone(),
                 labels: HashMap::from_iter([
-                    ("start".to_string(), BaseOffset(0)),
-                    ("func".to_string(), BaseOffset(4)),
+                    ("start".to_string(), (true, BaseOffset(0))),
+                    ("func".to_string(), (true, BaseOffset(4))),
                 ]),
                 ..Default::default() 
             },
@@ -762,8 +767,8 @@ mod tests {
                 modname: "lib2".to_string(),
                 code: lib2_bin.clone(),
                 labels: HashMap::from_iter([
-                    ("start".to_string(), BaseOffset(0)),
-                    ("func".to_string(), BaseOffset(2)),
+                    ("start".to_string(), (true, BaseOffset(0))),
+                    ("func".to_string(), (true, BaseOffset(2))),
                 ]),
                 ..Default::default() 
             },
@@ -819,8 +824,8 @@ mod tests {
                 modname: "lib2".to_string(),
                 code: lib2_bin.clone(),
                 labels: HashMap::from_iter([
-                    ("start".to_string(), BaseOffset(0)),
-                    ("func".to_string(), BaseOffset(4)),
+                    ("start".to_string(), (true, BaseOffset(0))),
+                    ("func".to_string(), (true, BaseOffset(4))),
                 ]),
                 ..Default::default() 
             },
@@ -849,6 +854,38 @@ mod tests {
         let bin = link(modules).unwrap();
 
         assert_eq!(bin.0, exp_bin);
+    }
+
+    #[test]
+    fn branches_to_another_module_with_private_label_returns_err() {
+        let main_bin_len = 8;
+        let main_bin = vec![0u8; main_bin_len];
+        let modules = vec![
+            AssemblyModule { 
+                modname: "main".to_string(), 
+                code: main_bin.clone(),
+                linker_patches: vec![
+                    LinkerPatch::BranchWithImport(BranchPatch {
+                        patch_at: BaseOffset(0),
+                        reference: LabelRef { kind: RefKind::ModuleRef(ModuleRef { module: "lib2".into(), member: "start".into() }), size: RefSize(32) },
+                        cond: None
+                    })
+                ],
+                ..Default::default() 
+            },
+            AssemblyModule { 
+                modname: "lib2".to_string(),
+                code: vec![0u8; 8],
+                labels: HashMap::from_iter([
+                    ("start".to_string(), (false, BaseOffset(0))), // not public
+                ]),
+                ..Default::default() 
+            },
+        ];
+
+        let err = link(modules).unwrap_err();
+
+        assert!(err.to_string().contains("unresolved patch in module 'main'"), "{}", err);
     }
 
     #[test]

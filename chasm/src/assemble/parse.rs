@@ -39,7 +39,11 @@ pub(crate) fn parse(tokens: AssemblyTokens<'_>) -> Result<AssemblyAst<'_>> {
                 nodes.push(node);
             }
             TokenKind::Label => {
-                let node = parse_label(token)?;
+                let node = parse_label(token);
+                nodes.push(node);
+            }
+            TokenKind::PublicLabel => {
+                let node = parse_public_label(token);
                 nodes.push(node);
             }
             TokenKind::LabelRef => {
@@ -203,7 +207,19 @@ fn parse_label_ref<'src>(ref_token: Token<'src>, tokens: &mut Peekable<IntoIter<
     }
 }
 
-fn parse_label<'src>(label_token: Token<'src>) -> Result<Node<'src>> {
+fn parse_public_label<'src>(label_token: Token<'src>) -> Node<'src> {
+    assert!(label_token.lexeme.starts_with('@'));
+    assert!(label_token.lexeme.len() > 5, "public label must have name after '@pub ': {}", label_token.lexeme);
+
+    let node = Node {
+        kind: NodeKind::PublicLabel,
+        token: label_token,
+    };
+
+    node
+}
+
+fn parse_label<'src>(label_token: Token<'src>) -> Node<'src> {
     assert!(label_token.lexeme.starts_with('@'));
     assert!(label_token.lexeme.len() > 1);
 
@@ -212,7 +228,7 @@ fn parse_label<'src>(label_token: Token<'src>) -> Result<Node<'src>> {
         token: label_token,
     };
 
-    Ok(node)
+    node
 }
 
 fn parse_instruction<'src>(token: Token<'src>, tokens: &mut Peekable<IntoIter<Token<'src>>>) -> Result<Node<'src>> {

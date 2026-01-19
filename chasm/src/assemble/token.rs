@@ -262,7 +262,7 @@ fn tokenize_label<'src>(
         cur_index += 1;
     }
 
-    let lexeme = &source[start_index..cur_index];
+    let mut lexeme = &source[start_index..cur_index];
     if lexeme.len() < 2 {
         let err = AssemblyError::new(
             "Label must have at least one character after '@'".to_string(),
@@ -274,8 +274,36 @@ fn tokenize_label<'src>(
         return Err(err.into());
     }
 
+    let mut kind = TokenKind::Label;
+    if lexeme == "@pub" {
+        while matches!(chars.peek(), Some((_, c)) if c.is_whitespace()) {
+            let (_, _) = chars.next().unwrap();
+            *col += 1;
+            cur_index += 1;
+        }
+        while matches!(chars.peek(), Some((_, c)) if is_valid_identifier_char(*c)) {
+            let (_, _) = chars.next().unwrap();
+            *col += 1;
+            cur_index += 1;
+        }
+
+        if lexeme.len() == 0 {
+            let err = AssemblyError::new(
+                "Public label must have at least one character".to_string(),
+                line,
+                start_col,
+                Some(*col),
+                source,
+            );
+            return Err(err.into());
+        }
+
+        lexeme = dbg!(&source[start_index..cur_index]);
+        kind = TokenKind::PublicLabel;
+    }
+
     let t = Token {
-        kind: TokenKind::Label,
+        kind,
         lexeme,
         line,
         column: start_col,
