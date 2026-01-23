@@ -469,6 +469,14 @@ impl AssemblyModule {
             linker_patches: header.linker_patches,
         }
     }
+    /// Serializes the assembly module into the given writer.
+    /// 
+    /// We're not directly implementing Serialize/Deserialize on the type
+    /// because I wanted the format to be a mix of human-readable header with
+    /// a raw binary code section.
+    /// 
+    /// Rather than spend time implementing that with serde, we're manually reading/writing
+    /// the binary sections and using serde for the header.
     pub fn serialize(&self, writer: &mut impl Write) -> Result<()> {
         let header_ref = AssemblyModuleHeaderRef {
             modname: &self.modname,
@@ -480,8 +488,6 @@ impl AssemblyModule {
         };
 
         let serialized_header = serde_json::to_string_pretty(&header_ref)?;
-        println!("{serialized_header}\n------------");
-
         let header_bytes = serialized_header.as_bytes();
         let header_len = header_bytes.len().to_be_bytes();
 
@@ -502,6 +508,9 @@ impl AssemblyModule {
         Ok(())
     }
 
+    /// Deserializes the assembly module into the given writer.
+    /// 
+    /// See notes on serialize() for rationale.
     pub fn deserialize(reader: &mut impl Read) -> Result<Self> {
         // prelude 
         let mut magic_bytes = [0u8; 13];
