@@ -1,6 +1,11 @@
 use std::collections::HashMap;
+use std::fs;
+use std::io::Cursor;
+use std::path::PathBuf;
 
+use anyhow::Context;
 use anyhow::{Result, anyhow, bail};
+use crate::LinkArgs;
 use crate::assemble::AssemblyModule;
 use crate::assemble::BaseOffset;
 use crate::assemble::BranchPatch;
@@ -19,13 +24,44 @@ use crate::assemble::codegen;
 
 const LINK_ERR: &str = "Link error:";
 
+pub fn link(args: LinkArgs) -> Result<()> {
+    let mut modules = Vec::with_capacity(args.files.len());
+
+    for file in args.files {
+        let module_bytes = fs::read(&file)
+            .with_context(|| format!("{LINK_ERR} Failed to read file '{}'", file.display()))?;
+
+        let mut module_bytes = Cursor::new(module_bytes);
+        let module = AssemblyModule::deserialize(&mut module_bytes)
+            .with_context(|| format!("{LINK_ERR} Failed to deserialize module from file '{}'", file.display()))?;
+
+        modules.push((file, module));
+    }
+
+    link_assembled_modules(modules)
+}
+
+/// Links multiple assembly modules into a single binary and writes it to disk.
+pub (crate) fn link_assembled_modules(mut modules: Vec<(PathBuf, AssemblyModule)>) -> Result<()> {
+    put_main_in_front(&mut modules)?;
+    let mut main_bin = modules[0].0.clone();
+    main_bin.set_extension("");
+    let modules = modules.into_iter().map(|(_, module)| module).collect();
+    let bin = link_modules(modules)?;
+
+    fs::write(&main_bin, &bin.0)
+        .with_context(|| format!("Failed to write binary file '{}'", main_bin.display()))?;
+
+    Ok(())
+}
+
 /// Links multiple assembly modules into a single binary.
 /// 
 /// Current restrictions:
 /// - There must be exactly one module named "main"
 /// - The main module must be the first module in the list
 /// - Remaining modules are linked in order
-pub fn link(modules: Vec<AssemblyModule>) -> Result<Binary> {
+fn link_modules(modules: Vec<AssemblyModule>) -> Result<Binary> {
     if modules.is_empty() {
         bail!("{LINK_ERR} no modules to link");
     }
@@ -403,6 +439,21 @@ fn main_module_index(modules: &[AssemblyModule]) -> Result<usize> {
     Ok(main_i)
 }
 
+/// Puts the main module in front of the module list.
+/// 
+/// Returns an error if no main module is found.
+fn put_main_in_front(modules: &mut Vec<(PathBuf, AssemblyModule)>) -> Result<()> {
+    let main_index = modules.iter()
+        .position(|(_, module)| module.modname == "main")
+        .ok_or_else(|| anyhow!("No 'main' module found; cannot link without an entry point"))?;
+
+    if main_index != 0 {
+        modules.swap(0, main_index);
+    }
+
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct Binary(pub Vec<u8>);
 
@@ -419,7 +470,7 @@ mod tests {
             AssemblyModule { modname: "mylib2".to_string(), ..Default::default() },
         ];
 
-        let err = link(modules).unwrap_err().to_string();
+        let err = link_modules(modules).unwrap_err().to_string();
 
         assert!(err.contains("no main module found"), "{}", err);
     } 
@@ -428,7 +479,7 @@ mod tests {
     fn empty_module_list_fails_to_link() {
         let modules = vec![];
 
-        let err = link(modules).unwrap_err().to_string();
+        let err = link_modules(modules).unwrap_err().to_string();
 
         assert!(err.contains("no modules to link"), "{}", err);
     }
@@ -441,7 +492,7 @@ mod tests {
             AssemblyModule { modname: "main".to_string(), ..Default::default() },
         ];
 
-        let err = link(modules).unwrap_err().to_string();
+        let err = link_modules(modules).unwrap_err().to_string();
 
         assert!(err.contains("more than one main module found"), "{}", err);
     }
@@ -454,7 +505,7 @@ mod tests {
             AssemblyModule { modname: "mylib2".to_string(), ..Default::default() },
         ];
 
-        let err = link(modules).unwrap_err().to_string();
+        let err = link_modules(modules).unwrap_err().to_string();
 
         assert!(err.contains("duplicate module 'mylib2'"), "{}", err);
     }    
@@ -467,7 +518,7 @@ mod tests {
             AssemblyModule { modname: "mylib3".to_string(), code: vec![0x22, 0x22], ..Default::default() },
         ];
 
-        let linked_bin = link(modules).unwrap();
+        let linked_bin = link_modules(modules).unwrap();
 
         assert_eq!(linked_bin.0.len(), 6);
         assert_eq!(&linked_bin.0[0..2], &[0x00, 0x00]);
@@ -501,7 +552,7 @@ mod tests {
         let mut exp_bin = main_bin;
         exp_bin.extend(vec![0x11, 0x11, 0xF9, 0x15]);
 
-        let bin = link(modules).unwrap();
+        let bin = link_modules(modules).unwrap();
 
         assert_eq!(bin.0, exp_bin);
     }
@@ -535,7 +586,7 @@ mod tests {
         let mut exp_bin = main_bin;
         exp_bin.extend(lib2_bin);
 
-        let bin = link(modules).unwrap();
+        let bin = link_modules(modules).unwrap();
 
         assert_eq!(bin.0, exp_bin);
     }
@@ -563,7 +614,7 @@ mod tests {
         // (label base offset + main_bin len) | 1 = 231 (0xE7) to 32-bit little endian
         exp_bin.extend(vec![0x11, 0x11, 0xE7, 0x00, 0x00, 0x00]);
 
-        let bin = link(modules).unwrap();
+        let bin = link_modules(modules).unwrap();
 
         assert_eq!(bin.0, exp_bin);
     }
@@ -627,7 +678,7 @@ mod tests {
             0x12, 0x34, 0x56, 0x78,                         // lib3 code
         ]);
 
-        let bin = link(modules).unwrap();
+        let bin = link_modules(modules).unwrap();
 
         assert_eq!(bin.0, exp_bin);
     }
@@ -652,7 +703,7 @@ mod tests {
             },
         ];
 
-        let err = link(modules).unwrap_err();
+        let err = link_modules(modules).unwrap_err();
 
         assert!(err.to_string().contains("unresolved patch in module 'main'"), "{}", err);
     }
@@ -714,7 +765,7 @@ mod tests {
         lib3_bin[2..6].copy_from_slice(&exp_lib3_import_bytes);
         exp_bin.extend(lib3_bin);
 
-        let bin = link(modules).unwrap();
+        let bin = link_modules(modules).unwrap();
 
         assert_eq!(bin.0, exp_bin);
     }
@@ -738,7 +789,7 @@ mod tests {
             },
         ];
 
-        let err = link(modules).unwrap_err();
+        let err = link_modules(modules).unwrap_err();
 
         assert!(err.to_string().contains("unresolved patch in module 'main'"), "{}", err);
     }
@@ -795,7 +846,7 @@ mod tests {
         lib3_bin[4..6].copy_from_slice(&[0xFB, 0xE7]);
         exp_bin.extend(lib3_bin);
 
-        let bin = link(modules).unwrap();
+        let bin = link_modules(modules).unwrap();
 
         assert_eq!(bin.0, exp_bin);
     }
@@ -851,7 +902,7 @@ mod tests {
         lib3_bin[4..8].copy_from_slice(&[0xFF, 0xF7, 0xFA, 0xFF]);
         exp_bin.extend(lib3_bin);
 
-        let bin = link(modules).unwrap();
+        let bin = link_modules(modules).unwrap();
 
         assert_eq!(bin.0, exp_bin);
     }
@@ -883,7 +934,7 @@ mod tests {
             },
         ];
 
-        let err = link(modules).unwrap_err();
+        let err = link_modules(modules).unwrap_err();
 
         assert!(err.to_string().contains("unresolved patch in module 'main'"), "{}", err);
     }
@@ -907,7 +958,7 @@ mod tests {
             },
         ];
 
-        let err = link(modules).unwrap_err();
+        let err = link_modules(modules).unwrap_err();
 
         assert!(err.to_string().contains("unresolved patch in module 'main'"), "{}", err);
     }
@@ -931,7 +982,7 @@ mod tests {
             },
         ];
 
-        let err = link(modules).unwrap_err();
+        let err = link_modules(modules).unwrap_err();
 
         assert!(err.to_string().contains("unresolved patch in module 'main'"), "{}", err);
     }

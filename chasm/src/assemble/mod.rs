@@ -3,10 +3,16 @@ mod token;
 pub (crate) mod codegen;
 mod helpers;
 
-use std::{borrow::Borrow, collections::{HashMap, HashSet}, fmt::{Debug, Display}, fs, ops::{Deref, DerefMut}, path::PathBuf};
+use std::borrow::Borrow;
+use std::collections::{HashMap, HashSet};
+use std::fmt::{Debug, Display};
+use std::fs;
+use std::io::{Read, Write};
+use std::ops::{Deref, DerefMut};
 
 use crate::{assemble::helpers::normalize_to_ascii_lower, AssembleArgs};
 use crate::link;
+use serde::{Deserialize, Serialize};
 use token::tokenize;
 use parse::parse;
 use codegen::codegen;
@@ -37,18 +43,14 @@ pub fn assemble(args: AssembleArgs) -> Result<()> {
     if args.no_link {
         for (file, assembly_module) in modules {
             let outfile = file.with_extension("bin");
-            fs::write(&outfile, &assembly_module.code)
+            let mut module_bytes = Vec::new();
+            let () = assembly_module.serialize(&mut module_bytes)?;
+
+            fs::write(&outfile, &module_bytes)
                 .with_context(|| format!("Failed to write binary file '{}'", outfile.display()))?;
         }
     } else {
-        put_main_in_front(&mut modules)?;
-        let main_file = modules[0].0.clone();
-        let modules = modules.into_iter().map(|(_, module)| module).collect();
-        let bin = link::link(modules)?;
-
-        let outfile = main_file.with_extension("bin");
-        fs::write(&outfile, &bin.0)
-            .with_context(|| format!("Failed to write binary file '{}'", outfile.display()))?;
+        link::link_assembled_modules(modules)?;
     }
 
     Ok(())
@@ -58,18 +60,6 @@ fn assemble_source(modname: impl AsRef<str>, source: &AssemblySource) -> Result<
     tokenize(source)
         .and_then(parse)
         .and_then(|ast| codegen(modname, ast))
-}
-
-fn put_main_in_front(modules: &mut Vec<(PathBuf, AssemblyModule)>) -> Result<()> {
-    let main_index = modules.iter()
-        .position(|(_, module)| module.modname == "main")
-        .ok_or_else(|| anyhow!("No 'main' module found; cannot link without an entry point"))?;
-
-    if main_index != 0 {
-        modules.swap(0, main_index);
-    }
-
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -109,7 +99,7 @@ enum NodeKind {
     PublicLabel,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct LabelRef {
     /// Expected size of the label being referenced
     pub size: RefSize,
@@ -131,7 +121,7 @@ pub struct DefinitionRef {
 }
 
 /// Number of bits a reference occupies.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct RefSize(pub usize);
 impl RefSize {
     /// Returns the size of the reference in bytes.
@@ -153,7 +143,7 @@ impl TryFrom<&str> for RefSize {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub enum RefKind {
     ModuleRef(ModuleRef),
     LocalRef(MemberName)
@@ -167,7 +157,7 @@ impl Display for RefKind {
     }
 }
 
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Hash, Eq, PartialEq)]
 pub struct ModuleRef {
     pub module: ModuleName,
     pub member: MemberName,
@@ -179,7 +169,7 @@ impl Display for ModuleRef {
 }
 
 /// An offset from the start of an assembly module's code (i.e. from 0).
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, Eq, PartialEq)]
 pub struct BaseOffset(pub usize);
 impl Deref for BaseOffset {
     type Target = usize;
@@ -231,13 +221,13 @@ enum PseudoInstruction {
     ThumbAddr { reference: String },
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Condition {
     Eq = 0b0000,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub enum HexLiteral {
     U32(u32),
     U16(u16),
@@ -400,7 +390,7 @@ impl<'src> DerefMut for AssemblyTokens<'src> {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq, Hash)]
 pub struct ModuleName(pub String);
 impl From<String> for ModuleName {
     fn from(s: String) -> Self {
@@ -428,7 +418,7 @@ impl Display for ModuleName {
     }
 }
 
-#[derive(Clone, Debug, Default, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Hash, Eq, PartialEq)]
 pub struct MemberName(pub String);
 impl From<String> for MemberName {
     fn from(s: String) -> Self {
@@ -457,7 +447,7 @@ impl Display for MemberName {
 }
 
 pub type Public = bool;
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub struct AssemblyModule {
     pub (crate) modname: String,
     pub (crate) code: Vec<u8>,
@@ -467,9 +457,117 @@ pub struct AssemblyModule {
     pub (crate) imports: HashSet<ModuleName>,
     pub (crate) linker_patches: Vec<LinkerPatch>,
 }
+impl AssemblyModule {
+    pub fn new(header: AssemblyModuleHeader, code: Vec<u8>) -> Self {
+        Self {
+            modname: header.modname,
+            code,
+            labels: header.labels,
+            definitions: header.definitions,
+            pub_definitions: header.pub_definitions,
+            imports: header.imports,
+            linker_patches: header.linker_patches,
+        }
+    }
+    pub fn serialize(&self, writer: &mut impl Write) -> Result<()> {
+        let header_ref = AssemblyModuleHeaderRef {
+            modname: &self.modname,
+            imports: &self.imports,
+            definitions: &self.definitions,
+            pub_definitions: &self.pub_definitions,
+            labels: &self.labels,
+            linker_patches: &self.linker_patches,
+        };
+
+        let serialized_header = serde_json::to_string_pretty(&header_ref)?;
+        println!("{serialized_header}\n------------");
+
+        let header_bytes = serialized_header.as_bytes();
+        let header_len = header_bytes.len().to_be_bytes();
+
+        // prelude
+        writer.write_all(b"CHASM MODULE\n")?;
+        writer.write_all(b"version 1\n")?;
+        writer.write_all(b"headerlen ")?;
+        writer.write_all(&header_len)?;
+        writer.write_all(b"\n\n")?;
+
+        // header
+        writer.write_all(header_bytes)?;
+        writer.write_all(b"\n\n")?;
+
+        // code
+        writer.write_all(&self.code)?;
+
+        Ok(())
+    }
+
+    pub fn deserialize(reader: &mut impl Read) -> Result<Self> {
+        // prelude 
+        let mut magic_bytes = [0u8; 13];
+        reader.read_exact(&mut magic_bytes)?;
+        if &magic_bytes != b"CHASM MODULE\n" {
+            bail!("Invalid module: missing magic bytes at start");
+        }
+
+        let mut version_bytes = [0u8; 10];
+        reader.read_exact(&mut version_bytes)?;
+        if &version_bytes != b"version 1\n" {
+            bail!("Invalid module: missing version string");
+        }
+
+        let mut headerlen_prefix = [0u8; 10];
+        reader.read_exact(&mut headerlen_prefix)?;
+        if &headerlen_prefix != b"headerlen " {
+            bail!("Invalid module: missing headerlen prefix");
+        }
+
+        let mut header_len_bytes = [0u8; 8];
+        reader.read_exact(&mut header_len_bytes)?;
+        let header_len = usize::from_be_bytes(header_len_bytes);
+        reader.read_exact(&mut [0u8; 2])?; // \n\n
+
+        // header
+        let mut header_bytes = vec![0u8; header_len];
+        reader.read_exact(&mut header_bytes)?;
+
+        let header: AssemblyModuleHeader = serde_json::from_slice(&header_bytes)?;
+        reader.read_exact(&mut [0u8; 2])?; // \n\n
+
+        // code
+        let mut code_bytes = Vec::new();
+        reader.read_to_end(&mut code_bytes)?;
+        
+        let module = AssemblyModule::new(header, code_bytes);
+        Ok(module)
+    }
+}
+
+#[derive(Serialize)]
+struct AssemblyModuleHeaderRef<'a> {
+    modname: &'a str,
+    imports: &'a HashSet<ModuleName>,
+
+    definitions: &'a HashMap<String, HexLiteral>,
+    pub_definitions: &'a HashMap<String, HexLiteral>,
+
+    labels: &'a HashMap<String, (Public, BaseOffset)>,
+    linker_patches: &'a Vec<LinkerPatch>,
+}
+
+#[derive(Deserialize)]
+pub struct AssemblyModuleHeader {
+    modname: String,
+    imports: HashSet<ModuleName>,
+
+    definitions: HashMap<String, HexLiteral>,
+    pub_definitions: HashMap<String, HexLiteral>,
+    labels: HashMap<String, (Public, BaseOffset)>,
+    linker_patches: Vec<LinkerPatch>,
+}
 
 /// A patch to be applied by the linker.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub enum LinkerPatch {
     LabelNewOffset(LabelNewOffsetPatch),
     ImportLabelRef(ImportLabelRefPatch),
@@ -479,7 +577,7 @@ pub enum LinkerPatch {
     ImportDefinitionRef(ImportDefinitionRefPatch),
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct LabelNewOffsetPatch {
     /// Where in the module's code the patch should be applied.
     pub patch_at: BaseOffset,
@@ -491,7 +589,7 @@ pub struct LabelNewOffsetPatch {
     pub unpatched_value: usize,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ImportLabelRefPatch {
     /// Where in the module's code the patch should be applied.
     pub patch_at: BaseOffset,
@@ -501,7 +599,7 @@ pub struct ImportLabelRefPatch {
     pub import_module: ModuleRef,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ImportDefinitionRefPatch {
     /// Where in the module's code the patch should be applied.
     pub patch_at: BaseOffset,
@@ -512,7 +610,7 @@ pub struct ImportDefinitionRefPatch {
 }
 
 /// Number of bytes to overwrite in a patch.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[repr(usize)]
 pub enum PatchSize {
     U8 = 1,
@@ -536,7 +634,7 @@ impl PatchSize {
 // These are expected to be removed, eventually, since the linker must overwrite
 // them anyways, but there's a bunch of tests that verify codegen using these
 // patches, so they remain for now.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub enum AssemblerPatch {
     /// An in-place overwrite of raw bytes at a given offset.
     Raw(RawPatch),
@@ -548,13 +646,13 @@ pub enum AssemblerPatch {
     ThumbAddrPseudo(ThumbAddrPseudoPatch),
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct RawPatch {
     /// Where in the module's code the patch should be applied.
     patch_at: BaseOffset,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct BranchPatch {
     /// Where in the module's code the patch should be applied.
     pub patch_at: BaseOffset,
@@ -562,14 +660,14 @@ pub struct BranchPatch {
     pub cond: Option<Condition>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct BranchWithLinkPatch {
     pub patch_at: BaseOffset,
     pub reference: LabelRef,
     pub cond: Option<Condition>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ThumbAddrPseudoPatch {
     pub patch_at: BaseOffset,
     pub reference: String,
@@ -1871,5 +1969,54 @@ mod tests {
         ]);
 
         assert_eq!(module.labels.get("myfunc"), Some(&(true, BaseOffset(8))));
+    }
+
+    #[test]
+    fn assembly_module_survives_roundtrip_serialization() {
+        let to_serialize = AssemblyModule {
+            modname: "test-module".to_string(),
+            code: vec![0x11, 0x22, 0x33, 0x44],
+            definitions: {
+                let mut defs = HashMap::new();
+                defs.insert("CONST".to_string(), HexLiteral::U16(0x1234));
+                defs
+            },
+            pub_definitions: {
+                let mut pub_defs = HashMap::new();
+                pub_defs.insert("START".to_string(), HexLiteral::U32(0x20000000));
+                pub_defs.insert("OTHER".to_string(), HexLiteral::U32(0x12345));
+                pub_defs
+            },
+            imports: {
+                let mut imps = HashSet::new();
+                imps.insert("my-mod".into());
+                imps.insert("other-mod".into());
+                imps
+            },
+            labels: {
+                let mut labels = HashMap::new();
+                labels.insert("PRIVATE".to_string(), (true, BaseOffset(0)));
+                labels.insert("OTHERPRIVATE".to_string(), (false, BaseOffset(70_000)));
+                labels
+            },
+            linker_patches: vec![
+                LinkerPatch::LabelNewOffset(LabelNewOffsetPatch { patch_at: BaseOffset(100), patch_size: PatchSize::U16, unpatched_value: 50 }),
+                LinkerPatch::ImportLabelRef(ImportLabelRefPatch {
+                    patch_at: BaseOffset(200),
+                    patch_size: PatchSize::U32,
+                    import_module: ModuleRef {
+                        module: ModuleName("my-mod".into()),
+                        member: MemberName("LABEL".into())
+                    }
+                })
+            ],
+        };
+
+        let mut buf = Vec::new();
+        to_serialize.serialize(&mut buf).unwrap();
+
+        let deserialized = AssemblyModule::deserialize(&mut buf.as_slice()).unwrap();
+
+        assert_eq!(to_serialize, deserialized);
     }
 }

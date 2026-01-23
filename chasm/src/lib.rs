@@ -18,3 +18,9 @@ pub struct AssembleArgs {
     #[arg(long, default_value_t = false)]
     no_link: bool,
 }
+
+#[derive(Args, Debug)]
+pub struct LinkArgs {
+    /// The chasm modules to link
+    files: Vec<PathBuf>,
+}
