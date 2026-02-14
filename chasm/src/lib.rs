@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::Args;
 
 pub mod assemble;
+pub mod code;
 pub mod link;
 
 #[derive(Args, Debug)]
@@ -24,3 +25,7 @@ pub struct LinkArgs {
     /// The chasm modules to link
     files: Vec<PathBuf>,
 }
+
+#[cfg(feature = "code")]
+#[derive(Args, Debug)]
+pub struct CodeArgs;

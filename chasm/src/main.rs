@@ -1,4 +1,4 @@
-use chasm::{AssembleArgs, LinkArgs, assemble as asm, link};
+use chasm::{AssembleArgs, CodeArgs, LinkArgs, assemble::assemble, link::link, code::code,};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -9,10 +9,14 @@ fn main() -> Result<()> {
 
     match args.command {
         Assemble(assemble_args) => {
-            asm::assemble(assemble_args)
+            assemble(assemble_args)
         }
         Link(link_args) => {
-            link::link(link_args)
+            link(link_args)
+        }
+        #[cfg(feature = "code")]
+        Code(code_args) => {
+            code(code_args)
         }
     }
 }
@@ -33,5 +37,9 @@ enum Command {
 
     /// Link a set of assembly modules together into a single binary
     Link(LinkArgs),
+
+    /// Start the built-in Chasm assembly editor
+    #[cfg(feature = "code")]
+    Code(CodeArgs),
 }
 
