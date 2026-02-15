@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::Args;
 
 pub mod assemble;
+#[cfg(feature = "code")]
 pub mod code;
 pub mod link;
 
