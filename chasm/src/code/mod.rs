@@ -1,12 +1,20 @@
-use crate::CodeArgs;
+use crate::{CodeArgs, project::ChasmProject};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
-    DefaultTerminal, Frame, buffer::Buffer, layout::{Constraint, Direction, Layout, Rect}, style::{Color, Style, Stylize}, symbols::border, text::{Line, Text}, widgets::{Block, Paragraph, Widget}
+    DefaultTerminal,
+    Frame,
+    buffer::Buffer,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style, Stylize},
+    text::Text,
+    widgets::{Block, Paragraph, Widget}
 };
 
 pub fn code(args: CodeArgs) -> Result<()> {
+    let project = ChasmProject::load(args.project_dir.0)?;
+    dbg!(project);
     ratatui::run(|terminal| App::new().run(terminal))
 }
 
@@ -14,20 +22,19 @@ pub fn code(args: CodeArgs) -> Result<()> {
 pub struct App {
     status: StatusBar,
     editor: Editor,
-    exit: bool
+    should_exit: bool
 }
 impl App {
     pub fn new() -> Self {
         Self {
             status: StatusBar {},
             editor: Editor {},
-            exit: false,
+            should_exit: false,
         }
     }
 
-    /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        while !self.exit {
+        while !self.should_exit {
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?;
         }
@@ -66,14 +73,14 @@ impl App {
     }
 
     fn exit(&mut self) {
-        self.exit = true;
+        self.should_exit = true;
     }
 
 }
 
 #[derive(Debug)]
 struct StatusBar {
-
+    // TODO
 }
 impl Widget for &StatusBar {
     fn render(self, area: Rect, buf: &mut Buffer) {
@@ -87,7 +94,7 @@ impl Widget for &StatusBar {
 
 #[derive(Debug)]
 struct Editor {
-
+    // TODO
 }
 impl Widget for &Editor {
     fn render(self, area: Rect, buf: &mut Buffer) {
