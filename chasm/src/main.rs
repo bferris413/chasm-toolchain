@@ -3,7 +3,15 @@ use chasm::{AssembleArgs, CodeArgs, LinkArgs, assemble::assemble, link::link, co
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+// https://nnethercote.github.io/dh_view/dh_view.html
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
     use Command::*;
     let args = Cli::parse();
 

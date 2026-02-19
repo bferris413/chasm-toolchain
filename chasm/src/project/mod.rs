@@ -37,6 +37,37 @@ impl ChasmProject {
             config: ProjectConfig {},
         })
     }
+
+    pub fn module_names(&self) -> Vec<ModulePath> {
+        let src_dir = self.root.join("src");
+        let mut modules = vec![];
+        if let Ok(entries) = src_dir.read_dir() {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_file() && is_chasm_assembly_file(&entry.path()) {
+                        let path = entry.path();
+                        let module_name = path.file_stem().unwrap();
+
+                        modules.push(ModulePath {
+                            path: entry.path(),
+                            name: module_name.to_string_lossy().to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        modules
+    }
+}    
+
+fn is_chasm_assembly_file(path: &PathBuf) -> bool {
+    path.extension().and_then(|s| s.to_str()) == Some("cas")
+}
+
+#[derive(Debug, Clone)]
+pub struct ModulePath {
+    pub path: PathBuf,
+    pub name: String,
 }
 
 #[derive(Debug)]
