@@ -252,18 +252,20 @@ impl ChasmWidget for Editor {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(digits_for_line_numbers as u16 + 1),
-                Constraint::Fill(1),
+                Constraint::Length(digits_for_line_numbers as u16 + 1), // line numbers + padding
+                Constraint::Fill(1), // code
+                Constraint::Length(1), // scroll bar
             ])
             .split(area);
 
         let gutter = layout[0];
         let code_area = layout[1];
+        let scroll_area = layout[2];
 
         let start = self.scroll_y;
         let end = (start + height).min(total_lines);
 
-        // 1️⃣ Render line numbers manually
+        // render line numbers manually in gutter
         for (screen_row, line_idx) in (start..end).enumerate() {
             let line_number = line_idx + 1;
 
@@ -275,6 +277,19 @@ impl ChasmWidget for Editor {
                 text,
                 Style::default().fg(Color::DarkGray),
             );
+        }
+
+        // render scroll bar manually
+        let total = total_lines as f64;
+        let pos = self.scroll_y as f64;
+        let height = code_area.height as f64;
+
+        let bar_pos = (pos / total * height).floor() as u16;
+        let bar_height = ((height / total) * height).ceil() as u16;
+
+        for i in 0..code_area.height {
+            let symbol = if i >= bar_pos && i < bar_pos + bar_height { "▐" } else { " " };
+            buf[(scroll_area.x, scroll_area.y + i)].set_symbol(symbol);
         }
         
         let code_slice = &self.code[start..end as usize];
