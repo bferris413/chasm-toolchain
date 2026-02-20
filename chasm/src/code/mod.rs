@@ -5,7 +5,7 @@ use std::{
 use crate::{CodeArgs, project::{ChasmProject, ModulePath}};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal,
     Frame,
@@ -404,6 +404,22 @@ impl ChasmWidget for YesNoModal {
                     self.selection = Selection::No;
                     AppCommand::None
                 }
+                KeyCode::Char('Y') => {
+                    if matches!(self.selection, Selection::Yes) {
+                        AppCommand::Yes
+                    } else {
+                        self.selection = Selection::Yes;
+                        AppCommand::None
+                    }
+                }
+                KeyCode::Char('N') => {
+                    if matches!(self.selection, Selection::No) {
+                        AppCommand::No
+                    } else {
+                        self.selection = Selection::No;
+                        AppCommand::None
+                    }
+                }
                 KeyCode::Tab => {
                     // toggle
                     self.selection = !self.selection;
@@ -472,8 +488,8 @@ impl ChasmWidget for YesNoModal {
             Style::default()
         };
 
-        let yes_button = Paragraph::new("[ Yes ]").centered().style(yes_style).block(Block::default());
-        let no_button = Paragraph::new("[ No ]").centered().style(no_style).block(Block::default());
+        let yes_button = Paragraph::new(Line::from(vec!["[ ".into(), "Y".underlined(), "es ]".into()])).centered().style(yes_style).block(Block::default());
+        let no_button = Paragraph::new(Line::from(vec!["[ ".into(), "N".underlined(), "o ]".into()])).centered().style(no_style).block(Block::default());
 
         modal_block.render(modal_area, buf);
         prompt_block.render(prompt_area, buf);
