@@ -16,8 +16,14 @@ use ratatui::{
     widgets::{Block, Borders, FrameExt, List, ListState, Paragraph, StatefulWidget, Widget, WidgetRef}
 };
 
+#[derive(Clone, Debug)]
+struct Metadata {
+    status_area: StatusArea,
+    view_area: ViewArea,
+}
+
 trait ChasmWidget: Debug {
-    fn handle_event(&mut self, event: &Event) -> AppCommand;
+    fn handle_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand;
     fn render(&self, area: Rect, buf: &mut Buffer);
 }
 impl Widget for &dyn ChasmWidget {
@@ -45,6 +51,11 @@ enum AppCommand {
     Yes,
     No,
 }
+
+#[derive(Copy, Clone, Debug)]
+struct StatusArea(Rect);
+#[derive(Copy, Clone, Debug)]
+struct ViewArea(Rect);
 
 #[derive(Debug)]
 pub struct App {
@@ -78,29 +89,37 @@ impl App {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.should_exit {
-            terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events()?;
+            let frame = terminal.get_frame();
+            let (status_area, view_area) = Self::top_level_layout(&frame);
+            let metadata = Metadata { status_area, view_area };
+
+            terminal.draw(|frame| self.draw(frame, status_area, view_area))?;
+            self.handle_events(metadata)?;
         }
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn top_level_layout(f: &Frame) -> (StatusArea, ViewArea) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
                 Constraint::Fill(1),
             ])
-            .split(frame.area());
+            .split(f.area());
 
-        frame.render_widget(&self.status, layout[0]);
-        frame.render_widget_ref(self.view_stack.last().unwrap().as_ref(), layout[1]);
+        (StatusArea(layout[0]), ViewArea(layout[1]))
     }
 
-    fn handle_events(&mut self) -> Result<()> {
+    fn draw(&self, frame: &mut Frame, status_area: StatusArea, view_area: ViewArea) {
+        frame.render_widget(&self.status, status_area.0);
+        frame.render_widget_ref(self.view_stack.last().unwrap().as_ref(), view_area.0);
+    }
+
+    fn handle_events(&mut self, meta: Metadata) -> Result<()> {
         match event::read()? {
             e @ Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.status.handle_event(&e); 
+                self.status.handle_event(&e, &meta);
 
                 match key_event.code {
                     KeyCode::Char('q') => {
@@ -111,7 +130,7 @@ impl App {
                         }
                     }
                     _other => {
-                        let cmd = self.view_stack.last_mut().unwrap().handle_event(&e);
+                        let cmd = self.view_stack.last_mut().unwrap().handle_event(&e, &meta);
                         match cmd {
                             AppCommand::Yes => {
                                 if self.exit_modal_active {
@@ -154,7 +173,7 @@ impl StatusBar {
      }
 }
 impl ChasmWidget for StatusBar {
-    fn handle_event(&mut self, event: &Event) -> AppCommand {
+    fn handle_event(&mut self, event: &Event, _meta: &Metadata) -> AppCommand {
         match event {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                 self.event_text.clear();
@@ -199,10 +218,17 @@ impl Widget for &StatusBar {
 }
 
 #[derive(Debug)]
+enum EditorMode {
+    Normal,
+    Insert,
+}
+#[derive(Debug)]
 struct Editor {
     module: ModulePath,
     code: Vec<String>,
     scroll_y: usize,
+    mode: EditorMode,
+    cursor_y: usize,
 }
 impl Editor {
     pub fn new(module: ModulePath) -> Self {
@@ -217,22 +243,53 @@ impl Editor {
             module,
             code,
             scroll_y: 0,
+            mode: EditorMode::Normal,
+            cursor_y: 0,
+        }
+    }
+
+    fn ensure_cursor_visible(&mut self, meta: &Metadata) {
+        let view_height = meta.view_area.0.height as usize;
+        if self.cursor_y > self.scroll_y + view_height - 1 {
+            self.scroll_y = self.cursor_y.saturating_sub(view_height - 1);
+        } else if self.cursor_y < self.scroll_y {
+            self.scroll_y = self.cursor_y;
         }
     }
 }
 impl ChasmWidget for Editor {
     
-    fn handle_event(&mut self, event: &Event) -> AppCommand {
+    fn handle_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
+                KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.scroll_y = self.scroll_y.saturating_add(1);
+                    AppCommand::None
+                }
+                KeyCode::Char('K') | KeyCode::Up if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.scroll_y = self.scroll_y.saturating_sub(1);
+                    AppCommand::None
+                }
                 KeyCode::Char('j') | KeyCode::Down => {
                     // down, no wrap
-                    self.scroll_y = self.scroll_y.saturating_add(1);
+                    let move_size = if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                        meta.view_area.0.height as usize
+                    } else {
+                        1
+                    };
+                    self.cursor_y = self.cursor_y.saturating_add(move_size).min(self.code.len().saturating_sub(1));
+                    self.ensure_cursor_visible(meta);
                     AppCommand::None
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     // up, no wrap
-                    self.scroll_y = self.scroll_y.saturating_sub(1);
+                    let move_size = if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                        meta.view_area.0.height as usize
+                    } else {
+                        1
+                    };
+                    self.cursor_y = self.cursor_y.saturating_sub(move_size);
+                    self.ensure_cursor_visible(meta);
                     AppCommand::None
                 }
                 _other => {
@@ -254,13 +311,11 @@ impl ChasmWidget for Editor {
             .constraints([
                 Constraint::Length(digits_for_line_numbers as u16 + 1), // line numbers + padding
                 Constraint::Fill(1), // code
-                Constraint::Length(1), // scroll bar
             ])
             .split(area);
 
         let gutter = layout[0];
         let code_area = layout[1];
-        let scroll_area = layout[2];
 
         let start = self.scroll_y;
         let end = (start + height).min(total_lines);
@@ -279,23 +334,17 @@ impl ChasmWidget for Editor {
             );
         }
 
-        // render scroll bar manually
-        let total = total_lines as f64;
-        let pos = self.scroll_y as f64;
-        let height = code_area.height as f64;
-
-        let bar_pos = (pos / total * height).floor() as u16;
-        let bar_height = ((height / total) * height).ceil() as u16;
-
-        for i in 0..code_area.height {
-            let symbol = if i >= bar_pos && i < bar_pos + bar_height { "▐" } else { " " };
-            buf[(scroll_area.x, scroll_area.y + i)].set_symbol(symbol);
-        }
-        
-        let code_slice = &self.code[start..end as usize];
+        let code_slice = &self.code[start..end];
         let code_as_lines = code_slice.iter().map(|line| Line::from(line.as_str())).collect::<Vec<_>>();
 
         Paragraph::new(code_as_lines).block(Block::default()).render(code_area, buf);  
+
+        // draw the line highlight if visible
+        if (start..end).contains(&self.cursor_y) {
+            let cursor_screen_y = self.cursor_y - start;
+            let cursor_line_rect = Rect { y: code_area.y + cursor_screen_y as u16, height: 1, ..code_area };
+            buf.set_style(cursor_line_rect, Style::default().bg(Color::DarkGray));
+        }
     }
 }
 
@@ -342,7 +391,7 @@ impl ModuleSelectView {
 }
 
 impl ChasmWidget for ModuleSelectView {
-    fn handle_event(&mut self, event: &Event) -> AppCommand {
+    fn handle_event(&mut self, event: &Event, _meta: &Metadata) -> AppCommand {
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -406,7 +455,7 @@ impl YesNoModal {
     }
 }
 impl ChasmWidget for YesNoModal {
-    fn handle_event(&mut self, event: &Event) -> AppCommand {
+    fn handle_event(&mut self, event: &Event, _meta: &Metadata) -> AppCommand {
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
                 KeyCode::Char('h') | KeyCode::Left => {
