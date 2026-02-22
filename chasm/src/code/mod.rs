@@ -229,8 +229,13 @@ struct Editor {
     scroll_y: usize,
     mode: EditorMode,
 
+    // cursor 0-based y position in the code (not screen)
     cursor_y: usize,
+    // cursor 0-based x position in the code (not screen)
     cursor_x: usize,
+
+    // last x position explicitly moved to by the user, used for maintaining horizontal position when moving vertically
+    last_requested_x: usize,
 }
 impl Editor {
     pub fn new(module: ModulePath) -> Self {
@@ -248,6 +253,7 @@ impl Editor {
             mode: EditorMode::Normal,
             cursor_y: 0,
             cursor_x: 0,
+            last_requested_x: 0,
         }
     }
 
@@ -258,6 +264,16 @@ impl Editor {
         } else if self.cursor_y < self.scroll_y {
             self.scroll_y = self.cursor_y;
         }
+    }
+
+    fn max_cursor_x(&self) -> usize {
+        let clamp_at = if self.code[self.cursor_y].ends_with('\n') {
+            2
+        } else {
+            1
+        };
+
+        self.code[self.cursor_y].len().saturating_sub(clamp_at)
     }
 
 }
@@ -286,6 +302,7 @@ impl ChasmWidget for Editor {
                     // down, no wrap
                     let move_size = get_move_distance(key_event, meta);
                     self.cursor_y = self.cursor_y.saturating_add(move_size).min(self.code.len().saturating_sub(1));
+                    self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
                     self.snap_view_to_cursor(meta);
                     AppCommand::None
                 }
@@ -293,39 +310,32 @@ impl ChasmWidget for Editor {
                     // up, no wrap
                     let move_size = get_move_distance(key_event, meta);
                     self.cursor_y = self.cursor_y.saturating_sub(move_size);
+                    self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
                     self.snap_view_to_cursor(meta);
                     AppCommand::None
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
                     // left
-                    // let move_size = get_move_distance(key_event, meta);
                     self.cursor_x = self.cursor_x.saturating_sub(1);
-                    // self.snap_view_to_cursor(meta);
+                    self.last_requested_x = self.cursor_x;
                     AppCommand::None
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
                     // right
-                    // let move_size = get_move_distance(key_event, meta);
-                    let clamp_at = if self.code[self.cursor_y].ends_with('\n') {
-                        2
-                    } else {
-                        1
-                    };
-                    self.cursor_x = (self.cursor_x + 1).min(self.code[self.cursor_y].len().saturating_sub(clamp_at));
-                    // self.snap_view_to_cursor(meta);
+                    let max_cursor_x = self.max_cursor_x();
+                    self.cursor_x = (self.cursor_x + 1).min(max_cursor_x);
+                    self.last_requested_x = self.cursor_x;
                     AppCommand::None
                 }
                 KeyCode::Char('0') => {
                     self.cursor_x = 0;
+                    self.last_requested_x = self.cursor_x;
                     AppCommand::None
                 }
                 KeyCode::Char('$') => {
-                    let clamp_at = if self.code[self.cursor_y].ends_with('\n') {
-                        2
-                    } else {
-                        1
-                    };
-                    self.cursor_x = self.code[self.cursor_y].len().saturating_sub(clamp_at);
+                    let max_cursor_x = self.max_cursor_x();
+                    self.cursor_x = max_cursor_x;
+                    self.last_requested_x = self.cursor_x;
                     AppCommand::None
                 }
                 _other => {
