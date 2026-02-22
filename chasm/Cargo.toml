@@ -6,6 +6,9 @@ edition = "2024"
 [profile.release]
 debug = 1
 
+[profile.dev]
+debug = 2
+
 [dependencies]
 anyhow = "1.0.100"
 clap = { version = "4.5.48", features = ["derive"] }

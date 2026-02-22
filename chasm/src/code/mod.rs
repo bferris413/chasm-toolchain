@@ -16,7 +16,7 @@ use ratatui::{
     widgets::{Block, Borders, FrameExt, List, ListState, Paragraph, StatefulWidget, Widget, WidgetRef}
 };
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 struct Metadata {
     status_area: StatusArea,
     view_area: ViewArea,
@@ -52,9 +52,9 @@ enum AppCommand {
     No,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 struct StatusArea(Rect);
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 struct ViewArea(Rect);
 
 #[derive(Debug)]
@@ -65,6 +65,7 @@ pub struct App {
 
     should_exit: bool,
     exit_modal_active: bool,
+    metadata: Metadata,
 }
 impl App {
     pub fn new(project: ChasmProject) -> Self {
@@ -84,16 +85,25 @@ impl App {
 
             should_exit: false,
             exit_modal_active: false,
+
+            // populated in first draw call, but needs to be initialized to something
+            metadata: Metadata {
+                status_area: StatusArea(Rect::default()),
+                view_area: ViewArea(Rect::default()),
+            },
         }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.should_exit {
-            let frame = terminal.get_frame();
-            let (status_area, view_area) = Self::top_level_layout(&frame);
-            let metadata = Metadata { status_area, view_area };
+            let mut metadata = Metadata::default();
 
-            terminal.draw(|frame| self.draw(frame, status_area, view_area))?;
+            terminal.draw(|frame| {
+                let (status_area, view_area) = Self::top_level_layout(&frame);
+                metadata = Metadata { status_area, view_area };
+                self.draw(frame, status_area, view_area);
+            })?;
+
             self.handle_events(metadata)?;
         }
         Ok(())
@@ -154,7 +164,9 @@ impl App {
                     }
                 }
             }
-            _ => {}
+            e => {
+                self.status.handle_event(&e, &meta);
+            }
         };
 
         Ok(())
@@ -234,7 +246,7 @@ struct Editor {
     // cursor 0-based x position in the code (not screen)
     cursor_x: usize,
 
-    // last x position explicitly moved to by the user, used for maintaining horizontal position when moving vertically
+    // last x position explicitly moved to by the user
     last_requested_x: usize,
 }
 impl Editor {
@@ -280,13 +292,13 @@ impl Editor {
 impl ChasmWidget for Editor {
     
     fn handle_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
-        fn get_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
+        fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
-                meta.view_area.0.height as usize
+                (meta.view_area.0.height as usize).saturating_sub(1)
             } else {
                 1
             }
-        };
+        }
 
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
@@ -298,9 +310,21 @@ impl ChasmWidget for Editor {
                     self.scroll_y = self.scroll_y.saturating_sub(1);
                     AppCommand::None
                 }
+                KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.cursor_y = self.cursor_y.saturating_add((meta.view_area.0.height as usize).saturating_sub(1)).min(self.code.len().saturating_sub(1));
+                    self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
+                    self.snap_view_to_cursor(meta);
+                    AppCommand::None
+                }
+                KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.cursor_y = self.cursor_y.saturating_sub((meta.view_area.0.height as usize).saturating_sub(1));
+                    self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
+                    self.snap_view_to_cursor(meta);
+                    AppCommand::None
+                }
                 KeyCode::Char('j') | KeyCode::Down => {
                     // down, no wrap
-                    let move_size = get_move_distance(key_event, meta);
+                    let move_size = get_vertical_move_distance(key_event, meta);
                     self.cursor_y = self.cursor_y.saturating_add(move_size).min(self.code.len().saturating_sub(1));
                     self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
                     self.snap_view_to_cursor(meta);
@@ -308,7 +332,7 @@ impl ChasmWidget for Editor {
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     // up, no wrap
-                    let move_size = get_move_distance(key_event, meta);
+                    let move_size = get_vertical_move_distance(key_event, meta);
                     self.cursor_y = self.cursor_y.saturating_sub(move_size);
                     self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
                     self.snap_view_to_cursor(meta);
@@ -372,9 +396,10 @@ impl ChasmWidget for Editor {
 
             let text = format!("{:<width$} ", line_number, width = digits_for_line_numbers as usize);
 
+            let target_y = gutter.y + screen_row as u16;
             buf.set_string(
                 gutter.x,
-                gutter.y + screen_row as u16,
+                target_y,
                 text,
                 Style::default().fg(Color::DarkGray),
             );
