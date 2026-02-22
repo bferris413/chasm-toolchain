@@ -5,7 +5,7 @@ use std::{
 use crate::{CodeArgs, project::{ChasmProject, ModulePath}};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal,
     Frame,
@@ -228,13 +228,15 @@ struct Editor {
     code: Vec<String>,
     scroll_y: usize,
     mode: EditorMode,
+
     cursor_y: usize,
+    cursor_x: usize,
 }
 impl Editor {
     pub fn new(module: ModulePath) -> Self {
 
         let code = std::fs::read_to_string(&module.path).unwrap_or_else(|e| {
-            format!("Error loading module {}: {}\n\nReload of something...", module.name, e)
+            format!("Error loading module {}: {}\n\nReload or something...", module.name, e)
         });
 
         let code = code.split_inclusive('\n').map(|line| line.to_string()).collect();
@@ -245,10 +247,11 @@ impl Editor {
             scroll_y: 0,
             mode: EditorMode::Normal,
             cursor_y: 0,
+            cursor_x: 0,
         }
     }
 
-    fn ensure_cursor_visible(&mut self, meta: &Metadata) {
+    fn snap_view_to_cursor(&mut self, meta: &Metadata) {
         let view_height = meta.view_area.0.height as usize;
         if self.cursor_y > self.scroll_y + view_height - 1 {
             self.scroll_y = self.cursor_y.saturating_sub(view_height - 1);
@@ -256,10 +259,19 @@ impl Editor {
             self.scroll_y = self.cursor_y;
         }
     }
+
 }
 impl ChasmWidget for Editor {
     
     fn handle_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
+        fn get_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
+            if kev.modifiers.contains(KeyModifiers::CONTROL) {
+                meta.view_area.0.height as usize
+            } else {
+                1
+            }
+        };
+
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
                 KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -272,24 +284,48 @@ impl ChasmWidget for Editor {
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     // down, no wrap
-                    let move_size = if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                        meta.view_area.0.height as usize
-                    } else {
-                        1
-                    };
+                    let move_size = get_move_distance(key_event, meta);
                     self.cursor_y = self.cursor_y.saturating_add(move_size).min(self.code.len().saturating_sub(1));
-                    self.ensure_cursor_visible(meta);
+                    self.snap_view_to_cursor(meta);
                     AppCommand::None
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     // up, no wrap
-                    let move_size = if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                        meta.view_area.0.height as usize
+                    let move_size = get_move_distance(key_event, meta);
+                    self.cursor_y = self.cursor_y.saturating_sub(move_size);
+                    self.snap_view_to_cursor(meta);
+                    AppCommand::None
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    // left
+                    // let move_size = get_move_distance(key_event, meta);
+                    self.cursor_x = self.cursor_x.saturating_sub(1);
+                    // self.snap_view_to_cursor(meta);
+                    AppCommand::None
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    // right
+                    // let move_size = get_move_distance(key_event, meta);
+                    let clamp_at = if self.code[self.cursor_y].ends_with('\n') {
+                        2
                     } else {
                         1
                     };
-                    self.cursor_y = self.cursor_y.saturating_sub(move_size);
-                    self.ensure_cursor_visible(meta);
+                    self.cursor_x = (self.cursor_x + 1).min(self.code[self.cursor_y].len().saturating_sub(clamp_at));
+                    // self.snap_view_to_cursor(meta);
+                    AppCommand::None
+                }
+                KeyCode::Char('0') => {
+                    self.cursor_x = 0;
+                    AppCommand::None
+                }
+                KeyCode::Char('$') => {
+                    let clamp_at = if self.code[self.cursor_y].ends_with('\n') {
+                        2
+                    } else {
+                        1
+                    };
+                    self.cursor_x = self.code[self.cursor_y].len().saturating_sub(clamp_at);
                     AppCommand::None
                 }
                 _other => {
@@ -339,12 +375,17 @@ impl ChasmWidget for Editor {
 
         Paragraph::new(code_as_lines).block(Block::default()).render(code_area, buf);  
 
-        // draw the line highlight if visible
+        // draw the line highlight and cursor if visible
         if (start..end).contains(&self.cursor_y) {
             let cursor_screen_y = self.cursor_y - start;
-            let cursor_line_rect = Rect { y: code_area.y + cursor_screen_y as u16, height: 1, ..code_area };
+            let cursor_line_rect = Rect { y: code_area.y + cursor_screen_y as u16, x: gutter.x, width: gutter.width + code_area.width, height: 1 };
             buf.set_style(cursor_line_rect, Style::default().bg(Color::DarkGray));
+
+            // TODO: check horiz scroll
+            let cursor_screen_x = self.cursor_x as u16 + gutter.width;
+            buf.cell_mut((cursor_screen_x, cursor_line_rect.y)).unwrap().set_style(Style::default().bg(Color::LightGreen));
         }
+
     }
 }
 
