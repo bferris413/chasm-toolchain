@@ -11,7 +11,7 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, Borders, FrameExt, List, ListState, Paragraph, StatefulWidget, Widget, WidgetRef}
 };
@@ -207,7 +207,7 @@ impl ChasmWidget for StatusBar {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let title = "Chasm Editor";
-        let block = Block::default().style(Style::new().bg(Color::LightGreen));
+        let block = Block::default().style(Style::new().bg(Color::LightGreen).fg(Color::Black));
         let text = Line::from(vec![
             Span::styled(title, Style::new().bold()),
             Span::raw(" - "),
@@ -288,10 +288,7 @@ impl Editor {
         self.code[self.cursor_y].len().saturating_sub(clamp_at)
     }
 
-}
-impl ChasmWidget for Editor {
-    
-    fn handle_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
+    fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
                 (meta.view_area.0.height as usize).saturating_sub(1)
@@ -344,6 +341,11 @@ impl ChasmWidget for Editor {
                     self.last_requested_x = self.cursor_x;
                     AppCommand::None
                 }
+                KeyCode::Char('i') => {
+                    // insert mode
+                    self.mode = EditorMode::Insert;
+                    AppCommand::None
+                }
                 KeyCode::Char('l') | KeyCode::Right => {
                     // right
                     let max_cursor_x = self.max_cursor_x();
@@ -368,6 +370,54 @@ impl ChasmWidget for Editor {
             }
         } else {
             AppCommand::None
+        }
+    }
+
+    fn handle_insert_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
+        if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
+            match key_event.code {
+                KeyCode::Esc => {
+                    self.mode = EditorMode::Normal;
+                    self.last_requested_x = self.cursor_x;
+                    AppCommand::None
+                }
+                KeyCode::Char(c) => {
+                    self.code[self.cursor_y].insert(self.cursor_x, c);
+                    self.cursor_x += 1;
+                    AppCommand::None
+                }
+                KeyCode::Delete => {
+                    if self.cursor_x < self.code[self.cursor_y].len() {
+                        self.code[self.cursor_y].remove(self.cursor_x);
+                        self.cursor_x = self.cursor_x.min(self.max_cursor_x());
+                    }
+
+                    if self.code[self.cursor_y].is_empty() {
+                        self.code.remove(self.cursor_y);
+                        if self.cursor_y >= self.code.len() && self.cursor_y > 0 {
+                            self.cursor_y -= 1;
+                        }
+                        self.cursor_x = self.cursor_x.min(self.max_cursor_x());
+                    }
+
+                    AppCommand::None
+                }
+                _other => {
+                    AppCommand::None
+                }
+            }
+        } else {
+            AppCommand::None
+        }
+    }
+
+}
+impl ChasmWidget for Editor {
+    
+    fn handle_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
+        match self.mode {
+            EditorMode::Normal => self.handle_normal_mode_event(event, meta),
+            EditorMode::Insert => self.handle_insert_mode_event(event, meta),
         }
     }
 
@@ -401,7 +451,7 @@ impl ChasmWidget for Editor {
                 gutter.x,
                 target_y,
                 text,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             );
         }
 
@@ -418,7 +468,15 @@ impl ChasmWidget for Editor {
 
             // TODO: check horiz scroll
             let cursor_screen_x = self.cursor_x as u16 + gutter.width;
-            buf.cell_mut((cursor_screen_x, cursor_line_rect.y)).unwrap().set_style(Style::default().bg(Color::LightGreen));
+            let cell = buf.cell_mut((cursor_screen_x, cursor_line_rect.y)).unwrap();
+            match self.mode {
+                EditorMode::Normal => {
+                    cell.set_style(Style::default().bg(Color::LightGreen).fg(Color::Black));
+                }
+                EditorMode::Insert => {
+                    cell.set_style(Style::default().bg(Color::Red).fg(Color::Black));
+                }
+            }
         }
 
     }
