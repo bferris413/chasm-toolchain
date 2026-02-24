@@ -288,6 +288,29 @@ impl Editor {
         self.code[self.cursor_y].len().saturating_sub(clamp_at)
     }
 
+    fn move_cursor_up(&mut self, move_size: usize, meta: &Metadata) {
+        self.cursor_y = self.cursor_y.saturating_sub(move_size);
+        self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
+        self.snap_view_to_cursor(meta);
+    }
+
+    fn move_cursor_down(&mut self, move_size: usize, meta: &Metadata) {
+        self.cursor_y = self.cursor_y.saturating_add(move_size).min(self.code.len().saturating_sub(1));
+        self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
+        self.snap_view_to_cursor(meta);
+    }
+
+    fn move_cursor_left(&mut self) {
+        self.cursor_x = self.cursor_x.saturating_sub(1);
+        self.last_requested_x = self.cursor_x;
+    }
+
+    fn move_cursor_right(&mut self) {
+        let max_cursor_x = self.max_cursor_x();
+        self.cursor_x = (self.cursor_x + 1).min(max_cursor_x);
+        self.last_requested_x = self.cursor_x;
+    }
+
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -308,49 +331,31 @@ impl Editor {
                     AppCommand::None
                 }
                 KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_y = self.cursor_y.saturating_add((meta.view_area.0.height as usize).saturating_sub(1)).min(self.code.len().saturating_sub(1));
-                    self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
-                    self.snap_view_to_cursor(meta);
+                    let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
+                    self.move_cursor_down(move_size, meta);
                     AppCommand::None
                 }
                 KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_y = self.cursor_y.saturating_sub((meta.view_area.0.height as usize).saturating_sub(1));
-                    self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
-                    self.snap_view_to_cursor(meta);
+                    let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
+                    self.move_cursor_up(move_size, meta);
                     AppCommand::None
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    // down, no wrap
                     let move_size = get_vertical_move_distance(key_event, meta);
-                    self.cursor_y = self.cursor_y.saturating_add(move_size).min(self.code.len().saturating_sub(1));
-                    self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
-                    self.snap_view_to_cursor(meta);
+                    self.move_cursor_down(move_size, meta);
                     AppCommand::None
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    // up, no wrap
                     let move_size = get_vertical_move_distance(key_event, meta);
-                    self.cursor_y = self.cursor_y.saturating_sub(move_size);
-                    self.cursor_x = self.last_requested_x.min(self.max_cursor_x());
-                    self.snap_view_to_cursor(meta);
+                    self.move_cursor_up(move_size, meta);
                     AppCommand::None
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
-                    // left
-                    self.cursor_x = self.cursor_x.saturating_sub(1);
-                    self.last_requested_x = self.cursor_x;
-                    AppCommand::None
-                }
-                KeyCode::Char('i') => {
-                    // insert mode
-                    self.mode = EditorMode::Insert;
+                    self.move_cursor_left();
                     AppCommand::None
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
-                    // right
-                    let max_cursor_x = self.max_cursor_x();
-                    self.cursor_x = (self.cursor_x + 1).min(max_cursor_x);
-                    self.last_requested_x = self.cursor_x;
+                    self.move_cursor_right();
                     AppCommand::None
                 }
                 KeyCode::Char('0') => {
@@ -362,6 +367,11 @@ impl Editor {
                     let max_cursor_x = self.max_cursor_x();
                     self.cursor_x = max_cursor_x;
                     self.last_requested_x = self.cursor_x;
+                    AppCommand::None
+                }
+                KeyCode::Char('i') => {
+                    // insert mode
+                    self.mode = EditorMode::Insert;
                     AppCommand::None
                 }
                 _other => {
@@ -379,6 +389,41 @@ impl Editor {
                 KeyCode::Esc => {
                     self.mode = EditorMode::Normal;
                     self.last_requested_x = self.cursor_x;
+                    AppCommand::None
+                }
+                KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('h') | KeyCode::Char('l') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                    match key_event.code {
+                        KeyCode::Char('j') => {
+                            self.move_cursor_down(1, meta);
+                        }
+                        KeyCode::Char('k') => {
+                            self.move_cursor_up(1, meta);
+                        }
+                        KeyCode::Char('h') => {
+                            self.move_cursor_left();
+                        }
+                        KeyCode::Char('l') => {
+                            self.move_cursor_right();
+                        }
+                        _ => unreachable!(),
+                    }
+
+                    AppCommand::None
+                }
+                KeyCode::Left => {
+                    self.move_cursor_left();
+                    AppCommand::None
+                }
+                KeyCode::Right => {
+                    self.move_cursor_right();
+                    AppCommand::None
+                }
+                KeyCode::Up => {
+                    self.move_cursor_up(1, meta);
+                    AppCommand::None
+                }
+                KeyCode::Down => {
+                    self.move_cursor_down(1, meta);
                     AppCommand::None
                 }
                 KeyCode::Char(c) => {
