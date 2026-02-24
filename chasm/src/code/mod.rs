@@ -257,7 +257,7 @@ impl Editor {
             format!("Error loading module {}: {}\n\nReload or something...", module.name, e)
         });
 
-        let code = code.split_inclusive('\n').map(|line| line.to_string()).collect();
+        let code = code.lines().map(|line| line.to_string()).collect();
 
         Self {
             module,
@@ -280,12 +280,7 @@ impl Editor {
     }
 
     fn max_cursor_x(&self) -> usize {
-        let clamp_at = if self.code[self.cursor_y].ends_with('\n') {
-            2
-        } else {
-            1
-        };
-
+        let clamp_at = 1;
         self.code[self.cursor_y].len().saturating_sub(clamp_at)
     }
 
@@ -312,6 +307,47 @@ impl Editor {
         self.last_requested_x = self.cursor_x;
     }
 
+    fn delete_forward(&mut self) {
+        if self.cursor_x < self.code[self.cursor_y].len() {
+            self.code[self.cursor_y].remove(self.cursor_x);
+            self.cursor_x = self.cursor_x.min(self.max_cursor_x());
+        }
+
+        if self.code[self.cursor_y].is_empty() {
+            self.code.remove(self.cursor_y);
+            if self.cursor_y >= self.code.len() && self.cursor_y > 0 {
+                self.cursor_y -= 1;
+            }
+            self.cursor_x = self.cursor_x.min(self.max_cursor_x());
+        }
+    }
+
+    fn delete_backward(&mut self) {
+        if self.cursor_x > 0 {
+            self.code[self.cursor_y].remove(self.cursor_x - 1);
+            self.cursor_x -= 1;
+        } else if self.cursor_y > 0 {
+            assert!(self.cursor_x == 0);
+
+            let prev_line_len = self.code[self.cursor_y - 1].len();
+            let current_line = self.code.remove(self.cursor_y);
+            self.cursor_y -= 1;
+            self.code[self.cursor_y].push_str(&current_line);
+            self.cursor_x = prev_line_len;
+        }
+    }
+
+    fn skip_x_whitespace_forward(&mut self) {
+        let mut line_chars = self.code[self.cursor_y].chars();
+        while let Some(c) = line_chars.next() {
+            if c.is_ascii_whitespace() {
+                self.cursor_x += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -328,9 +364,20 @@ impl Editor {
                     self.snap_view_to_cursor(meta);
                     AppCommand::None
                 }
-                KeyCode::Char('g') => {
+                KeyCode::Char('g') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.cursor_y = 0;
                     self.snap_view_to_cursor(meta);
+                    AppCommand::None
+                }
+                KeyCode::Char('I') => {
+                    self.cursor_x = 0;
+                    self.skip_x_whitespace_forward();
+                    self.last_requested_x = self.cursor_x;
+                    self.mode = EditorMode::Insert;
+                    AppCommand::None
+                }
+                KeyCode::Char('x') => {
+                    self.delete_forward();
                     AppCommand::None
                 }
                 KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -442,20 +489,12 @@ impl Editor {
                     self.cursor_x += 1;
                     AppCommand::None
                 }
+                KeyCode::Backspace => {
+                    self.delete_backward();
+                    AppCommand::None
+                }
                 KeyCode::Delete => {
-                    if self.cursor_x < self.code[self.cursor_y].len() {
-                        self.code[self.cursor_y].remove(self.cursor_x);
-                        self.cursor_x = self.cursor_x.min(self.max_cursor_x());
-                    }
-
-                    if self.code[self.cursor_y].is_empty() {
-                        self.code.remove(self.cursor_y);
-                        if self.cursor_y >= self.code.len() && self.cursor_y > 0 {
-                            self.cursor_y -= 1;
-                        }
-                        self.cursor_x = self.cursor_x.min(self.max_cursor_x());
-                    }
-
+                    self.delete_forward();
                     AppCommand::None
                 }
                 _other => {
