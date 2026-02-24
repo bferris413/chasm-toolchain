@@ -213,6 +213,7 @@ impl ChasmWidget for StatusBar {
             Span::raw(" - "),
             Span::raw(&self.event_text),
         ]);
+
         Paragraph::new(text)
             .block(block)
             .render(area, buf);
@@ -322,6 +323,16 @@ impl Editor {
 
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
+                KeyCode::Char('G') => {
+                    self.cursor_y = self.code.len().saturating_sub(1);
+                    self.snap_view_to_cursor(meta);
+                    AppCommand::None
+                }
+                KeyCode::Char('g') => {
+                    self.cursor_y = 0;
+                    self.snap_view_to_cursor(meta);
+                    AppCommand::None
+                }
                 KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.scroll_y = self.scroll_y.saturating_add(1);
                     AppCommand::None
