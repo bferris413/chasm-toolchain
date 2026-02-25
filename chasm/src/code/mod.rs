@@ -409,6 +409,26 @@ impl Editor {
                     self.mode = EditorMode::Insert;
                     AppCommand::None
                 }
+                KeyCode::Char('O') => {
+                    let has_no_lines = self.code.is_empty();
+
+                    if has_no_lines {
+                        self.code.push(String::new());
+                    } else {
+                        self.code.insert(self.cursor_y, String::new());
+                        self.cursor_x = 0;
+                    }
+
+                    self.mode = EditorMode::Insert;
+                    AppCommand::None
+                }
+                KeyCode::Char('o') => {
+                    self.code.insert(self.cursor_y + 1, String::new());
+                    self.cursor_y += 1;
+                    self.cursor_x = 0;
+                    self.mode = EditorMode::Insert;
+                    AppCommand::None
+                }
                 KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.scroll_y = self.scroll_y.saturating_add(1);
                     AppCommand::None
