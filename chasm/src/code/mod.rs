@@ -346,6 +346,7 @@ impl Editor {
                 break;
             }
         }
+        self.last_requested_x = self.cursor_x;
     }
 
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
@@ -372,12 +373,40 @@ impl Editor {
                 KeyCode::Char('I') => {
                     self.cursor_x = 0;
                     self.skip_x_whitespace_forward();
-                    self.last_requested_x = self.cursor_x;
                     self.mode = EditorMode::Insert;
                     AppCommand::None
                 }
                 KeyCode::Char('x') => {
                     self.delete_forward();
+                    AppCommand::None
+                }
+                KeyCode::Char('a') => {
+                    let is_max_normal_len = self.cursor_x == self.max_cursor_x();
+                    let is_empty = self.code[self.cursor_y].is_empty();
+
+                    if is_empty {
+                        // we have an empty line, no need to move cursor
+                        assert!(is_max_normal_len);
+                    } else if is_max_normal_len {
+                        // user wants to append
+                        self.cursor_x += 1;
+                    } else {
+                        self.move_cursor_right();
+                    }
+
+                    self.mode = EditorMode::Insert;
+                    AppCommand::None
+                }
+                KeyCode::Char('s') => {
+                    let is_empty = self.code[self.cursor_y].is_empty();
+
+                    if is_empty {
+                        // do nothing
+                    } else {
+                        self.code[self.cursor_y].remove(self.cursor_x);
+                    }
+
+                    self.mode = EditorMode::Insert;
                     AppCommand::None
                 }
                 KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -446,6 +475,17 @@ impl Editor {
             match key_event.code {
                 KeyCode::Esc => {
                     self.mode = EditorMode::Normal;
+                    let is_empty = self.code[self.cursor_y].is_empty();
+                    let is_off_line = self.cursor_x == self.code[self.cursor_y].len();
+
+                    if is_empty && is_off_line {
+                        // nothing to do, cursor is in valid position
+                    } else if is_off_line {
+                        assert!(!is_empty);
+                        // we are on a non-empty line but past the end (e.g. via 'a'), move back to last char
+                        self.move_cursor_left();
+                    }
+
                     self.last_requested_x = self.cursor_x;
                     AppCommand::None
                 }
@@ -518,7 +558,7 @@ impl ChasmWidget for Editor {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let height = area.height as usize;
-        let digits_for_line_numbers = digits(self.code.len() as u64);
+        let digits_for_line_numbers = digits_in(self.code.len() as u64);
         let total_lines = self.code.len();
 
         let layout = Layout::default()
@@ -807,7 +847,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     Rect::new(x, y, width, height)
 }
 
-fn digits(n: u64) -> u32 {
+fn digits_in(n: u64) -> u32 {
     if n == 0 {
         1
     } else {
