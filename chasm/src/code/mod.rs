@@ -1,5 +1,5 @@
 use std::{
-    fmt::{Debug, Write}, ops::Not, sync::{Arc, RwLock}
+    fmt::{Debug, Write}, ops::{Not, Range}, sync::{Arc, RwLock}
 };
 
 use crate::{CodeArgs, project::{ChasmProject, ModulePath}};
@@ -230,11 +230,29 @@ impl Widget for &StatusBar {
     }
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum EditorMode {
     Normal,
     Insert,
 }
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct VisualSelection {
+    anchor: Position,
+    cursor: Position,
+}
+impl VisualSelection {
+    fn is_empty(&self) -> bool {
+        self.anchor == self.cursor
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Position {
+    line: usize,
+    column: usize,
+}
+
 #[derive(Debug)]
 struct Editor {
     module: ModulePath,
@@ -246,9 +264,9 @@ struct Editor {
     cursor_y: usize,
     // cursor 0-based x position in the code (not screen)
     cursor_x: usize,
-
     // last x position explicitly moved to by the user
     last_requested_x: usize,
+    active_selection: Option<VisualSelection>,
 }
 impl Editor {
     pub fn new(module: ModulePath) -> Self {
@@ -267,6 +285,7 @@ impl Editor {
             cursor_y: 0,
             cursor_x: 0,
             last_requested_x: 0,
+            active_selection: None,
         }
     }
 
@@ -349,6 +368,19 @@ impl Editor {
         self.last_requested_x = self.cursor_x;
     }
 
+    fn toggle_selection(&mut self) {
+        if self.active_selection.is_none() {
+            let anchor = Position { line: self.cursor_y, column: self.cursor_x };
+            self.active_selection = Some(VisualSelection { anchor, cursor: anchor });
+        } else {
+            self.active_selection = None;
+        }
+    }
+
+    fn should_update_visual_selection(&self) -> bool {
+        self.active_selection.is_some()
+    }
+
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -358,136 +390,163 @@ impl Editor {
             }
         }
 
-        if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
-            match key_event.code {
-                KeyCode::Char('G') => {
-                    self.cursor_y = self.code.len().saturating_sub(1);
-                    self.snap_view_to_cursor(meta);
-                    AppCommand::None
-                }
-                KeyCode::Char('g') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_y = 0;
-                    self.snap_view_to_cursor(meta);
-                    AppCommand::None
-                }
-                KeyCode::Char('I') => {
-                    self.cursor_x = 0;
-                    self.skip_x_whitespace_forward();
-                    self.mode = EditorMode::Insert;
-                    AppCommand::None
-                }
-                KeyCode::Char('x') => {
-                    self.delete_forward();
-                    AppCommand::None
-                }
-                KeyCode::Char('a') => {
-                    let is_max_normal_len = self.cursor_x == self.max_cursor_x();
-                    let is_empty = self.code[self.cursor_y].is_empty();
-
-                    if is_empty {
-                        // we have an empty line, no need to move cursor
-                        assert!(is_max_normal_len);
-                    } else if is_max_normal_len {
-                        // user wants to append
-                        self.cursor_x += 1;
-                    } else {
-                        self.move_cursor_right();
-                    }
-
-                    self.mode = EditorMode::Insert;
-                    AppCommand::None
-                }
-                KeyCode::Char('s') => {
-                    let is_empty = self.code[self.cursor_y].is_empty();
-
-                    if is_empty {
-                        // do nothing
-                    } else {
-                        self.code[self.cursor_y].remove(self.cursor_x);
-                    }
-
-                    self.mode = EditorMode::Insert;
-                    AppCommand::None
-                }
-                KeyCode::Char('O') => {
-                    let has_no_lines = self.code.is_empty();
-
-                    if has_no_lines {
-                        self.code.push(String::new());
-                    } else {
-                        self.code.insert(self.cursor_y, String::new());
-                        self.cursor_x = 0;
-                    }
-
-                    self.mode = EditorMode::Insert;
-                    AppCommand::None
-                }
-                KeyCode::Char('o') => {
-                    self.code.insert(self.cursor_y + 1, String::new());
-                    self.cursor_y += 1;
-                    self.cursor_x = 0;
-                    self.mode = EditorMode::Insert;
-                    AppCommand::None
-                }
-                KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
-                    self.scroll_y = self.scroll_y.saturating_add(1);
-                    AppCommand::None
-                }
-                KeyCode::Char('K') | KeyCode::Up if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
-                    self.scroll_y = self.scroll_y.saturating_sub(1);
-                    AppCommand::None
-                }
-                KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
-                    self.move_cursor_down(move_size, meta);
-                    AppCommand::None
-                }
-                KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
-                    self.move_cursor_up(move_size, meta);
-                    AppCommand::None
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let move_size = get_vertical_move_distance(key_event, meta);
-                    self.move_cursor_down(move_size, meta);
-                    AppCommand::None
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    let move_size = get_vertical_move_distance(key_event, meta);
-                    self.move_cursor_up(move_size, meta);
-                    AppCommand::None
-                }
-                KeyCode::Char('h') | KeyCode::Left => {
-                    self.move_cursor_left();
-                    AppCommand::None
-                }
-                KeyCode::Char('l') | KeyCode::Right => {
-                    self.move_cursor_right();
-                    AppCommand::None
-                }
-                KeyCode::Char('0') => {
-                    self.cursor_x = 0;
-                    self.last_requested_x = self.cursor_x;
-                    AppCommand::None
-                }
-                KeyCode::Char('$') => {
-                    let max_cursor_x = self.max_cursor_x();
-                    self.cursor_x = max_cursor_x;
-                    self.last_requested_x = self.cursor_x;
-                    AppCommand::None
-                }
-                KeyCode::Char('i') => {
-                    // insert mode
-                    self.mode = EditorMode::Insert;
-                    AppCommand::None
-                }
-                _other => {
-                    AppCommand::None
-                }
-            }
-        } else {
-            AppCommand::None
+        if ! event.is_key_press() {
+            return AppCommand::None;
         }
+
+        let Event::Key(key_event) = event else { unreachable!() };
+
+        let app_cmd = match key_event.code {
+            KeyCode::Esc => {
+                if self.active_selection.is_some() {
+                    self.active_selection = None;
+                }
+                AppCommand::None
+            }
+            KeyCode::Char('G') => {
+                self.cursor_y = self.code.len().saturating_sub(1);
+                self.snap_view_to_cursor(meta);
+                AppCommand::None
+            }
+            KeyCode::Char('g') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_y = 0;
+                self.snap_view_to_cursor(meta);
+                AppCommand::None
+            }
+            KeyCode::Char('I') => {
+                self.cursor_x = 0;
+                self.skip_x_whitespace_forward();
+                self.mode = EditorMode::Insert;
+                self.active_selection = None;
+                AppCommand::None
+            }
+            KeyCode::Char('x') => {
+                self.delete_forward();
+                AppCommand::None
+            }
+            KeyCode::Char('a') => {
+                let is_max_normal_len = self.cursor_x == self.max_cursor_x();
+                let is_empty = self.code[self.cursor_y].is_empty();
+
+                if is_empty {
+                    // we have an empty line, no need to move cursor
+                    assert!(is_max_normal_len);
+                } else if is_max_normal_len {
+                    // user wants to append
+                    self.cursor_x += 1;
+                } else {
+                    self.move_cursor_right();
+                }
+
+                self.mode = EditorMode::Insert;
+                self.active_selection = None;
+                AppCommand::None
+            }
+            KeyCode::Char('s') => {
+                let is_empty = self.code[self.cursor_y].is_empty();
+
+                if is_empty {
+                    // do nothing
+                } else {
+                    self.code[self.cursor_y].remove(self.cursor_x);
+                }
+
+                self.mode = EditorMode::Insert;
+                self.active_selection = None;
+                AppCommand::None
+            }
+            KeyCode::Char('O') => {
+                let has_no_lines = self.code.is_empty();
+
+                if has_no_lines {
+                    self.code.push(String::new());
+                } else {
+                    self.code.insert(self.cursor_y, String::new());
+                    self.cursor_x = 0;
+                }
+
+                self.mode = EditorMode::Insert;
+                self.active_selection = None;
+                AppCommand::None
+            }
+            KeyCode::Char('o') => {
+                self.code.insert(self.cursor_y + 1, String::new());
+                self.cursor_y += 1;
+                self.cursor_x = 0;
+                self.mode = EditorMode::Insert;
+                self.active_selection = None;
+                AppCommand::None
+            }
+            KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.scroll_y = self.scroll_y.saturating_add(1);
+                AppCommand::None
+            }
+            KeyCode::Char('K') | KeyCode::Up if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.scroll_y = self.scroll_y.saturating_sub(1);
+                AppCommand::None
+            }
+            KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
+                self.move_cursor_down(move_size, meta);
+                AppCommand::None
+            }
+            KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
+                self.move_cursor_up(move_size, meta);
+                AppCommand::None
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let move_size = get_vertical_move_distance(key_event, meta);
+                self.move_cursor_down(move_size, meta);
+                AppCommand::None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let move_size = get_vertical_move_distance(key_event, meta);
+                self.move_cursor_up(move_size, meta);
+                AppCommand::None
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.move_cursor_left();
+                AppCommand::None
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.move_cursor_right();
+                AppCommand::None
+            }
+            KeyCode::Char('0') => {
+                self.cursor_x = 0;
+                self.last_requested_x = self.cursor_x;
+                AppCommand::None
+            }
+            KeyCode::Char('$') => {
+                let max_cursor_x = self.max_cursor_x();
+                self.cursor_x = max_cursor_x;
+                self.last_requested_x = self.cursor_x;
+                AppCommand::None
+            }
+            KeyCode::Char('i') => {
+                // insert mode
+                self.mode = EditorMode::Insert;
+                self.active_selection = None;
+                AppCommand::None
+            }
+            KeyCode::Char('v') => {
+                self.toggle_selection();
+                AppCommand::None
+            }
+            _other => {
+                AppCommand::None
+            }
+        };
+
+        let new_cursor_pos = Position { line: self.cursor_y, column: self.cursor_x };
+
+        if self.should_update_visual_selection() {
+            let selection = self.active_selection.as_mut().unwrap();
+            selection.cursor = new_cursor_pos;
+        }
+
+        app_cmd
     }
 
     fn handle_insert_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
@@ -617,6 +676,7 @@ impl ChasmWidget for Editor {
 
         // draw the line highlight and cursor if visible
         if (start..end).contains(&self.cursor_y) {
+            
             let cursor_screen_y = self.cursor_y - start;
             let cursor_line_rect = Rect { y: code_area.y + cursor_screen_y as u16, x: gutter.x, width: gutter.width + code_area.width, height: 1 };
             buf.set_style(cursor_line_rect, Style::default().bg(Color::DarkGray));
@@ -634,7 +694,89 @@ impl ChasmWidget for Editor {
             }
         }
 
+        let visible_range_y = start..end;
+
+        if let Some(selection) = &self.active_selection {
+            if selection.is_empty() {
+                // nothing to render
+            } else if selection_has_no_overlap(selection, &visible_range_y) {
+                // nothing to render
+            } else {
+                // This is admittedly a bit of a mess
+                let (selection_start,selection_end) = selection_visible_range(selection, &visible_range_y);
+                for line_no in selection_start.line..=selection_end.line {
+                    let render_line = (line_no - start) as u16;
+
+                    let (x_start, x_width) = if line_no == selection_start.line && line_no == selection_end.line {
+                        // start at selection start, width is selection length
+                        (selection_start.column as u16, (selection_end.column - selection_start.column) as u16)
+                    } else if line_no == selection_start.line {
+                        // start at selection start, width is entire line
+                        (selection_start.column as u16, (self.code[line_no].len() - selection_start.column) as u16)
+                    } else if line_no == selection_end.line {
+                        // start at selection start, width is selection end column
+                        (0, selection_end.column as u16) 
+                    } else {
+                        // entire line is selected
+                        (0, self.code[line_no].len() as u16)
+                    };
+
+                    let line_rect = Rect { y: code_area.y + render_line, x: code_area.x + x_start, width: x_width, height: 1 };
+                    buf.set_style(line_rect, Style::default().bg(Color::Gray));
+                }
+            }
+        }
+
     }
+}
+
+fn selection_visible_range(selection: &VisualSelection, visible_range_y: &Range<usize>) -> (Position, Position) {
+    assert!(!selection.is_empty(), "empty selection!");
+    let (start, end) = selection_absolute_order(selection);
+    clamp_selection_to_visible_range(start, end, visible_range_y)
+}
+
+fn clamp_selection_to_visible_range(start: Position, end: Position, visible_range_y: &Range<usize>) -> (Position, Position) {
+    let clamped_start = if start.line < visible_range_y.start {
+        Position { line: visible_range_y.start, column: 0 }
+    } else {
+        start
+    };
+
+    let clamped_end = if end.line >= visible_range_y.end {
+        Position { line: visible_range_y.end - 1, column: usize::MAX }
+    } else {
+        end
+    };
+
+    (clamped_start, clamped_end)
+}
+
+/// Returns the (start, end) positions of a given selection by comparing their line/col positions.
+fn selection_absolute_order(selection: &VisualSelection) -> (Position, Position) {
+    if selection.anchor.line < selection.cursor.line {
+        // selected downwards
+        (selection.anchor, selection.cursor)
+    } else if selection.cursor.line < selection.anchor.line {
+        // selected upwards
+        (selection.cursor, selection.anchor)
+    } else if selection.anchor.column <= selection.cursor.column {
+        // selection is across the same line
+        (selection.anchor, selection.cursor)
+    } else {
+        assert!(selection.cursor.column < selection.anchor.column);
+        (selection.cursor, selection.anchor)
+    }
+}
+
+fn selection_has_no_overlap(selection: &VisualSelection, visible_range_y: &Range<usize>) -> bool {
+    let anchor_is_above = selection.anchor.line < visible_range_y.start;
+    let cursor_is_above = selection.cursor.line < visible_range_y.start;
+
+    let anchor_is_below = selection.anchor.line >= visible_range_y.end;
+    let cursor_is_below = selection.cursor.line >= visible_range_y.end;
+
+    (anchor_is_above && cursor_is_above) || (anchor_is_below && cursor_is_below)
 }
 
 #[derive(Debug)]
@@ -718,29 +860,29 @@ impl ChasmWidget for ModuleSelectView {
 }
 
 #[derive(Copy, Clone, Debug)]
-enum Selection {
+enum ModalSelection {
     Yes,
     No,
 }
-impl Not for Selection {
+impl Not for ModalSelection {
     type Output = Self;
 
     fn not(self) -> Self::Output {
         match self {
-            Selection::Yes => Selection::No,
-            Selection::No => Selection::Yes
+            ModalSelection::Yes => ModalSelection::No,
+            ModalSelection::No => ModalSelection::Yes
         }
     }
 }
 struct YesNoModal {
     title: &'static str,
     prompt: Span<'static>,
-    selection: Selection,
+    selection: ModalSelection,
 }
 impl YesNoModal {
     pub fn new(title: &'static str, prompt: &'static str) -> Self {
         let prompt = Span::raw(prompt);
-        Self { title, prompt, selection: Selection::No }
+        Self { title, prompt, selection: ModalSelection::No }
     }
 }
 impl ChasmWidget for YesNoModal {
@@ -749,27 +891,27 @@ impl ChasmWidget for YesNoModal {
             match key_event.code {
                 KeyCode::Char('h') | KeyCode::Left => {
                     // left, no wrap
-                    self.selection = Selection::Yes;
+                    self.selection = ModalSelection::Yes;
                     AppCommand::None
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
                     // right, no wrap
-                    self.selection = Selection::No;
+                    self.selection = ModalSelection::No;
                     AppCommand::None
                 }
                 KeyCode::Char('Y') => {
-                    if matches!(self.selection, Selection::Yes) {
+                    if matches!(self.selection, ModalSelection::Yes) {
                         AppCommand::Yes
                     } else {
-                        self.selection = Selection::Yes;
+                        self.selection = ModalSelection::Yes;
                         AppCommand::None
                     }
                 }
                 KeyCode::Char('N') => {
-                    if matches!(self.selection, Selection::No) {
+                    if matches!(self.selection, ModalSelection::No) {
                         AppCommand::No
                     } else {
-                        self.selection = Selection::No;
+                        self.selection = ModalSelection::No;
                         AppCommand::None
                     }
                 }
@@ -780,8 +922,8 @@ impl ChasmWidget for YesNoModal {
                 }
                 KeyCode::Enter => {
                     match self.selection {
-                        Selection::Yes => AppCommand::Yes,
-                        Selection::No => AppCommand::No,
+                        ModalSelection::Yes => AppCommand::Yes,
+                        ModalSelection::No => AppCommand::No,
                     }
                 }
                 KeyCode::Esc => {
@@ -829,13 +971,13 @@ impl ChasmWidget for YesNoModal {
         let no_area = button_layout[3];
 
         let prompt_block = Paragraph::new(self.prompt.clone()).centered();
-        let yes_style = if matches!(self.selection, Selection::Yes) {
+        let yes_style = if matches!(self.selection, ModalSelection::Yes) {
             Style::default().reversed().bold()
         } else {
             Style::default()
         };
 
-        let no_style = if matches!(self.selection, Selection::No) {
+        let no_style = if matches!(self.selection, ModalSelection::No) {
             Style::default().reversed().bold()
         } else {
             Style::default()
