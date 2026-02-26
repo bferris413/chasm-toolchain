@@ -5,7 +5,7 @@ use std::{
 use crate::{CodeArgs, project::{ChasmProject, ModulePath}};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::{cursor, event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}};
 use ratatui::{
     DefaultTerminal,
     Frame,
@@ -674,24 +674,13 @@ impl ChasmWidget for Editor {
 
         Paragraph::new(code_as_lines).block(Block::default()).render(code_area, buf);  
 
-        // draw the line highlight and cursor if visible
+        // draw the line highlight (must be before selection)
+        let mut cursor_is_visible = false;
         if (start..end).contains(&self.cursor_y) {
-            
+            cursor_is_visible = true; 
             let cursor_screen_y = self.cursor_y - start;
             let cursor_line_rect = Rect { y: code_area.y + cursor_screen_y as u16, x: gutter.x, width: gutter.width + code_area.width, height: 1 };
             buf.set_style(cursor_line_rect, Style::default().bg(Color::DarkGray));
-
-            // TODO: check horiz scroll
-            let cursor_screen_x = self.cursor_x as u16 + gutter.width;
-            let cell = buf.cell_mut((cursor_screen_x, cursor_line_rect.y)).unwrap();
-            match self.mode {
-                EditorMode::Normal => {
-                    cell.set_style(Style::default().bg(Color::LightGreen).fg(Color::Black));
-                }
-                EditorMode::Insert => {
-                    cell.set_style(Style::default().bg(Color::Red).fg(Color::Black));
-                }
-            }
         }
 
         let visible_range_y = start..end;
@@ -712,17 +701,35 @@ impl ChasmWidget for Editor {
                         (selection_start.column as u16, (selection_end.column - selection_start.column) as u16)
                     } else if line_no == selection_start.line {
                         // start at selection start, width is entire line
-                        (selection_start.column as u16, (self.code[line_no].len() - selection_start.column) as u16)
+                        (selection_start.column as u16, (self.code[line_no].len() - selection_start.column + 1) as u16)
                     } else if line_no == selection_end.line {
                         // start at selection start, width is selection end column
                         (0, selection_end.column as u16) 
                     } else {
                         // entire line is selected
-                        (0, self.code[line_no].len() as u16)
+                        (0, self.code[line_no].len() as u16 + 1)
                     };
 
                     let line_rect = Rect { y: code_area.y + render_line, x: code_area.x + x_start, width: x_width, height: 1 };
                     buf.set_style(line_rect, Style::default().bg(Color::Gray));
+                }
+            }
+        }
+
+        // draw cursor (after all highlights/selections)
+        if cursor_is_visible {
+            let cursor_screen_y = self.cursor_y - start;
+            let cursor_line_rect_y = code_area.y + cursor_screen_y as u16;
+
+            // TODO: check horiz scroll
+            let cursor_screen_x = self.cursor_x as u16 + gutter.width;
+            let cell = buf.cell_mut((cursor_screen_x, cursor_line_rect_y)).unwrap();
+            match self.mode {
+                EditorMode::Normal => {
+                    cell.set_style(Style::default().bg(Color::LightGreen).fg(Color::Black));
+                }
+                EditorMode::Insert => {
+                    cell.set_style(Style::default().bg(Color::Red).fg(Color::Black));
                 }
             }
         }
