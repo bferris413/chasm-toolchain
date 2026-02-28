@@ -485,6 +485,23 @@ impl Editor {
 
                 AppCommand::None
             }
+            KeyCode::Char('A') => {
+                let is_max_normal_len = self.cursor_x == self.max_cursor_x();
+                let is_empty = self.code[self.cursor_y].is_empty();
+
+                if is_empty {
+                    assert!(is_max_normal_len);
+                } else {
+                    let line_len = self.code[self.cursor_y].len();
+                    let distance = line_len.saturating_sub(self.cursor_x);
+                    self.move_cursor_right(distance);
+                    self.cursor_x += 1; // appending
+                }
+
+                self.mode = EditorMode::Insert;
+                AppCommand::None
+
+            }
             KeyCode::Char('a') => {
                 if self.active_selection.is_none() {
                     let is_max_normal_len = self.cursor_x == self.max_cursor_x();
