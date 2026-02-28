@@ -315,14 +315,14 @@ impl Editor {
         self.snap_view_to_cursor(meta);
     }
 
-    fn move_cursor_left(&mut self) {
-        self.cursor_x = self.cursor_x.saturating_sub(1);
+    fn move_cursor_left(&mut self, distance: usize) {
+        self.cursor_x = self.cursor_x.saturating_sub(distance);
         self.last_requested_x = self.cursor_x;
     }
 
-    fn move_cursor_right(&mut self) {
+    fn move_cursor_right(&mut self, distance: usize) {
         let max_cursor_x = self.max_cursor_x();
-        self.cursor_x = (self.cursor_x + 1).min(max_cursor_x);
+        self.cursor_x = (self.cursor_x + distance).min(max_cursor_x);
         self.last_requested_x = self.cursor_x;
     }
 
@@ -433,6 +433,40 @@ impl Editor {
                 } else if let Some(selection) = self.active_selection.take() {
                     if selection.is_empty() {
                         self.delete_forward();
+                    } else {
+                        let (start, end) = selection_absolute_order(&selection);
+                        if start.line == end.line {
+                            // single line selection, delete the selected range
+                            let line = &mut self.code[start.line];
+                            line.replace_range(start.column..=end.column, "");
+                        } else {
+                            // multi-line selection, delete the selected range and merge lines
+                            let first_line = &mut self.code[start.line];
+                            first_line.replace_range(start.column.., "");
+
+                            let last_line = &mut self.code[end.line];
+                            last_line.replace_range(..=end.column, "");
+
+                            // remove all lines between start and end
+                            self.code.splice((start.line + 1)..end.line, std::iter::empty());
+
+                            // merge first and last line
+                            let last_line = self.code.remove(start.line + 1);
+                            self.code[start.line].push_str(&last_line);
+                        }
+
+                        let target_y = start.line;
+                        let y_distance = self.cursor_y.saturating_sub(target_y);
+                        self.move_cursor_up(y_distance, meta);
+
+                        let target_x = start.column;
+                        if self.cursor_x > target_x {
+                            let x_distance = self.cursor_x.saturating_sub(target_x);
+                            self.move_cursor_left(x_distance);
+                        } else {
+                            let x_distance = target_x.saturating_sub(self.cursor_x);
+                            self.move_cursor_right(x_distance); 
+                        }
                     }
                 }
                 AppCommand::None
@@ -448,7 +482,7 @@ impl Editor {
                     // user wants to append
                     self.cursor_x += 1;
                 } else {
-                    self.move_cursor_right();
+                    self.move_cursor_right(1);
                 }
 
                 self.mode = EditorMode::Insert;
@@ -514,11 +548,11 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                self.move_cursor_left();
+                self.move_cursor_left(1);
                 AppCommand::None
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                self.move_cursor_right();
+                self.move_cursor_right(1);
                 AppCommand::None
             }
             KeyCode::Char('0') => {
@@ -570,7 +604,7 @@ impl Editor {
                     } else if is_off_line {
                         assert!(!is_empty);
                         // we are on a non-empty line but past the end (e.g. via 'a'), move back to last char
-                        self.move_cursor_left();
+                        self.move_cursor_left(1);
                     }
 
                     self.last_requested_x = self.cursor_x;
@@ -585,10 +619,10 @@ impl Editor {
                             self.move_cursor_up(1, meta);
                         }
                         KeyCode::Char('h') => {
-                            self.move_cursor_left();
+                            self.move_cursor_left(1);
                         }
                         KeyCode::Char('l') => {
-                            self.move_cursor_right();
+                            self.move_cursor_right(1);
                         }
                         _ => unreachable!(),
                     }
@@ -596,11 +630,11 @@ impl Editor {
                     AppCommand::None
                 }
                 KeyCode::Left => {
-                    self.move_cursor_left();
+                    self.move_cursor_left(1);
                     AppCommand::None
                 }
                 KeyCode::Right => {
-                    self.move_cursor_right();
+                    self.move_cursor_right(1);
                     AppCommand::None
                 }
                 KeyCode::Up => {
@@ -706,19 +740,25 @@ impl ChasmWidget for Editor {
                 for line_no in selection_start.line..=selection_end.line {
                     let render_line = (line_no - start) as u16;
 
-                    let (x_start, x_width) = if line_no == selection_start.line && line_no == selection_end.line {
+                    let (x_start, mut x_width) = if line_no == selection_start.line && line_no == selection_end.line {
                         // start at selection start, width is selection length
                         (selection_start.column as u16, (selection_end.column - selection_start.column) as u16)
                     } else if line_no == selection_start.line {
                         // start at selection start, width is entire line
-                        (selection_start.column as u16, (self.code[line_no].len() - selection_start.column + 1) as u16)
+                        (selection_start.column as u16, (self.code[line_no].len() - selection_start.column) as u16)
                     } else if line_no == selection_end.line {
                         // start at selection start, width is selection end column
                         (0, selection_end.column as u16) 
                     } else {
                         // entire line is selected
-                        (0, self.code[line_no].len() as u16 + 1)
+                        (0, self.code[line_no].len() as u16)
                     };
+
+                    // This will visually account for:
+                    // - the invisible-but-implied newline at the end of each line, or
+                    // - the cursor's current position, or
+                    // - the cursor's start position, when the selection moved backwards
+                    x_width += 1;
 
                     let line_rect = Rect { y: code_area.y + render_line, x: code_area.x + x_start, width: x_width, height: 1 };
                     buf.set_style(line_rect, Style::default().bg(Color::Gray));
