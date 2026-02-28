@@ -376,6 +376,47 @@ impl Editor {
         self.active_selection.is_some()
     }
 
+    fn visual_delete(&mut self, selection: &VisualSelection, meta: &Metadata) {
+        if selection.is_empty() {
+            self.delete_forward();
+        } else {
+            let (start, end) = selection_absolute_order(&selection);
+            if start.line == end.line {
+                // single line selection, delete the selected range
+                let line = &mut self.code[start.line];
+                line.replace_range(start.column..=end.column, "");
+            } else {
+                // multi-line selection, delete the selected range and merge lines
+                let first_line = &mut self.code[start.line];
+                first_line.replace_range(start.column.., "");
+
+                let last_line = &mut self.code[end.line];
+                last_line.replace_range(..=end.column, "");
+
+                // remove all lines between start and end
+                self.code.splice((start.line + 1)..end.line, std::iter::empty());
+
+                // merge first and last line
+                let last_line = self.code.remove(start.line + 1);
+                self.code[start.line].push_str(&last_line);
+            }
+
+            let target_y = start.line;
+            let y_distance = self.cursor_y.saturating_sub(target_y);
+            self.move_cursor_up(y_distance, meta);
+
+            let target_x = start.column;
+            if self.cursor_x > target_x {
+                let x_distance = self.cursor_x.saturating_sub(target_x);
+                self.move_cursor_left(x_distance);
+            } else {
+                let x_distance = target_x.saturating_sub(self.cursor_x);
+                self.move_cursor_right(x_distance); 
+            }
+        }
+
+    }
+
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -423,7 +464,12 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('x') => {
-                self.delete_forward();
+                if let Some(selection) = self.active_selection.take() {
+                    self.visual_delete(&selection, meta);
+                } else {
+                    self.delete_forward();
+                }
+
                 AppCommand::None
             }
             KeyCode::Char('d') => {
@@ -431,44 +477,9 @@ impl Editor {
                     let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
                     self.move_cursor_down(move_size, meta);
                 } else if let Some(selection) = self.active_selection.take() {
-                    if selection.is_empty() {
-                        self.delete_forward();
-                    } else {
-                        let (start, end) = selection_absolute_order(&selection);
-                        if start.line == end.line {
-                            // single line selection, delete the selected range
-                            let line = &mut self.code[start.line];
-                            line.replace_range(start.column..=end.column, "");
-                        } else {
-                            // multi-line selection, delete the selected range and merge lines
-                            let first_line = &mut self.code[start.line];
-                            first_line.replace_range(start.column.., "");
-
-                            let last_line = &mut self.code[end.line];
-                            last_line.replace_range(..=end.column, "");
-
-                            // remove all lines between start and end
-                            self.code.splice((start.line + 1)..end.line, std::iter::empty());
-
-                            // merge first and last line
-                            let last_line = self.code.remove(start.line + 1);
-                            self.code[start.line].push_str(&last_line);
-                        }
-
-                        let target_y = start.line;
-                        let y_distance = self.cursor_y.saturating_sub(target_y);
-                        self.move_cursor_up(y_distance, meta);
-
-                        let target_x = start.column;
-                        if self.cursor_x > target_x {
-                            let x_distance = self.cursor_x.saturating_sub(target_x);
-                            self.move_cursor_left(x_distance);
-                        } else {
-                            let x_distance = target_x.saturating_sub(self.cursor_x);
-                            self.move_cursor_right(x_distance); 
-                        }
-                    }
+                    self.visual_delete(&selection, meta);
                 }
+
                 AppCommand::None
             }
             KeyCode::Char('a') => {
