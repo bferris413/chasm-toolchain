@@ -329,15 +329,10 @@ impl Editor {
     fn delete_forward(&mut self) {
         if self.cursor_x < self.code[self.cursor_y].len() {
             self.code[self.cursor_y].remove(self.cursor_x);
-            self.cursor_x = self.cursor_x.min(self.max_cursor_x());
-        }
-
-        if self.code[self.cursor_y].is_empty() {
-            self.code.remove(self.cursor_y);
-            if self.cursor_y >= self.code.len() && self.cursor_y > 0 {
-                self.cursor_y -= 1;
-            }
-            self.cursor_x = self.cursor_x.min(self.max_cursor_x());
+        } else if self.cursor_x == self.code[self.cursor_y].len() && self.cursor_y < self.code.len() - 1 {
+            // delete the logical newline by merging the current line with the next line
+            let line_to_append = self.code.remove(self.cursor_y + 1);
+            self.code[self.cursor_y].push_str(&line_to_append);
         }
     }
 
@@ -404,13 +399,20 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('G') => {
-                self.cursor_y = self.code.len().saturating_sub(1);
-                self.snap_view_to_cursor(meta);
+                let target_line = self.code.len().saturating_sub(1);
+                if target_line != self.cursor_y {
+                    let move_len = target_line.saturating_sub(self.cursor_y);
+                    self.move_cursor_down(move_len, meta);
+                }
                 AppCommand::None
             }
             KeyCode::Char('g') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor_y = 0;
-                self.snap_view_to_cursor(meta);
+                let target_line = 0;
+                if target_line != self.cursor_y {
+                    let move_len = self.cursor_y.saturating_sub(target_line);
+                    self.move_cursor_up(move_len, meta);
+                }
+
                 AppCommand::None
             }
             KeyCode::Char('I') => {
@@ -422,6 +424,17 @@ impl Editor {
             }
             KeyCode::Char('x') => {
                 self.delete_forward();
+                AppCommand::None
+            }
+            KeyCode::Char('d') => {
+                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                    let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
+                    self.move_cursor_down(move_size, meta);
+                } else if let Some(selection) = self.active_selection.take() {
+                    if selection.is_empty() {
+                        self.delete_forward();
+                    }
+                }
                 AppCommand::None
             }
             KeyCode::Char('a') => {
@@ -483,11 +496,6 @@ impl Editor {
             }
             KeyCode::Char('K') | KeyCode::Up if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.scroll_y = self.scroll_y.saturating_sub(1);
-                AppCommand::None
-            }
-            KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
-                self.move_cursor_down(move_size, meta);
                 AppCommand::None
             }
             KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -675,14 +683,16 @@ impl ChasmWidget for Editor {
         Paragraph::new(code_as_lines).block(Block::default()).render(code_area, buf);  
 
         // draw the line highlight (must be before selection)
-        let mut cursor_is_visible = false;
+        let mut cursor_line_is_visible = false;
         if (start..end).contains(&self.cursor_y) {
-            cursor_is_visible = true; 
+            cursor_line_is_visible = true; 
             let cursor_screen_y = self.cursor_y - start;
             let cursor_line_rect = Rect { y: code_area.y + cursor_screen_y as u16, x: gutter.x, width: gutter.width + code_area.width, height: 1 };
             buf.set_style(cursor_line_rect, Style::default().bg(Color::DarkGray));
         }
 
+
+        // draw the selection
         let visible_range_y = start..end;
 
         if let Some(selection) = &self.active_selection {
@@ -717,23 +727,26 @@ impl ChasmWidget for Editor {
         }
 
         // draw cursor (after all highlights/selections)
-        if cursor_is_visible {
-            let cursor_screen_y = self.cursor_y - start;
-            let cursor_line_rect_y = code_area.y + cursor_screen_y as u16;
+        if cursor_line_is_visible {
+            // TODO: we do nothing we x scroll
+            if self.cursor_x < code_area.width as usize {
+                // cursor is within visible code area, draw normally
+                let cursor_screen_y = self.cursor_y - start;
+                let cursor_line_rect_y = code_area.y + cursor_screen_y as u16;
 
-            // TODO: check horiz scroll
-            let cursor_screen_x = self.cursor_x as u16 + gutter.width;
-            let cell = buf.cell_mut((cursor_screen_x, cursor_line_rect_y)).unwrap();
-            match self.mode {
-                EditorMode::Normal => {
-                    cell.set_style(Style::default().bg(Color::LightGreen).fg(Color::Black));
-                }
-                EditorMode::Insert => {
-                    cell.set_style(Style::default().bg(Color::Red).fg(Color::Black));
+                let cursor_screen_x = self.cursor_x as u16 + gutter.width;
+                let cell = buf.cell_mut((cursor_screen_x, cursor_line_rect_y)).unwrap();
+
+                match self.mode {
+                    EditorMode::Normal => {
+                        cell.set_style(Style::default().bg(Color::LightGreen).fg(Color::Black));
+                    }
+                    EditorMode::Insert => {
+                        cell.set_style(Style::default().bg(Color::Red).fg(Color::Black));
+                    }
                 }
             }
         }
-
     }
 }
 
