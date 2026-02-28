@@ -501,16 +501,17 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('s') => {
-                let is_empty = self.code[self.cursor_y].is_empty();
-
-                if is_empty {
-                    // do nothing
+                if let Some(selection) = self.active_selection.take() {
+                    self.visual_delete(&selection, meta);
                 } else {
-                    self.code[self.cursor_y].remove(self.cursor_x);
+                    let is_empty = self.code[self.cursor_y].is_empty();
+
+                    if !is_empty {
+                        self.code[self.cursor_y].remove(self.cursor_x);
+                    }
                 }
 
                 self.mode = EditorMode::Insert;
-                self.active_selection = None;
                 AppCommand::None
             }
             KeyCode::Char('O') => {
