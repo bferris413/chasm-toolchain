@@ -5,14 +5,14 @@ use std::{
 use crate::{CodeArgs, project::{ChasmProject, ModulePath}};
 
 use anyhow::Result;
-use crossterm::{cursor, event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}};
+use crossterm::{event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}};
 use ratatui::{
     DefaultTerminal,
     Frame,
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text},
+    style::{Color, Style, Stylize},
+    text::{Line, Span},
     widgets::{Block, Borders, FrameExt, List, ListState, Paragraph, StatefulWidget, Widget, WidgetRef}
 };
 
@@ -244,6 +244,9 @@ struct VisualSelection {
 impl VisualSelection {
     fn is_empty(&self) -> bool {
         self.anchor == self.cursor
+    }
+    fn swap_anchor_and_cursor(&mut self) {
+        std::mem::swap(&mut self.anchor, &mut self.cursor);
     }
 }
 
@@ -483,21 +486,23 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('a') => {
-                let is_max_normal_len = self.cursor_x == self.max_cursor_x();
-                let is_empty = self.code[self.cursor_y].is_empty();
+                if self.active_selection.is_none() {
+                    let is_max_normal_len = self.cursor_x == self.max_cursor_x();
+                    let is_empty = self.code[self.cursor_y].is_empty();
 
-                if is_empty {
-                    // we have an empty line, no need to move cursor
-                    assert!(is_max_normal_len);
-                } else if is_max_normal_len {
-                    // user wants to append
-                    self.cursor_x += 1;
-                } else {
-                    self.move_cursor_right(1);
+                    if is_empty {
+                        // we have an empty line, no need to move cursor
+                        assert!(is_max_normal_len);
+                    } else if is_max_normal_len {
+                        // user wants to append
+                        self.cursor_x += 1;
+                    } else {
+                        self.move_cursor_right(1);
+                    }
+
+                    self.mode = EditorMode::Insert;
                 }
 
-                self.mode = EditorMode::Insert;
-                self.active_selection = None;
                 AppCommand::None
             }
             KeyCode::Char('s') => {
@@ -515,25 +520,40 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('O') => {
-                let has_no_lines = self.code.is_empty();
-
-                if has_no_lines {
-                    self.code.push(String::new());
+                if let Some(selection) = self.active_selection.as_mut() {
+                    selection.swap_anchor_and_cursor(); 
+                    self.cursor_x = selection.cursor.column;
+                    self.cursor_y = selection.cursor.line;
+                    self.snap_view_to_cursor(meta);
                 } else {
-                    self.code.insert(self.cursor_y, String::new());
-                    self.cursor_x = 0;
+                    let has_no_lines = self.code.is_empty();
+
+                    if has_no_lines {
+                        self.code.push(String::new());
+                    } else {
+                        self.code.insert(self.cursor_y, String::new());
+                        self.cursor_x = 0;
+                    }
+
+                    self.mode = EditorMode::Insert;
                 }
 
-                self.mode = EditorMode::Insert;
-                self.active_selection = None;
                 AppCommand::None
             }
             KeyCode::Char('o') => {
-                self.code.insert(self.cursor_y + 1, String::new());
-                self.cursor_y += 1;
-                self.cursor_x = 0;
-                self.mode = EditorMode::Insert;
-                self.active_selection = None;
+                if let Some(selection) = self.active_selection.as_mut() {
+                    selection.swap_anchor_and_cursor(); 
+                    self.cursor_x = selection.cursor.column;
+                    self.cursor_y = selection.cursor.line;
+                    self.snap_view_to_cursor(meta);
+                } else {
+                    self.code.insert(self.cursor_y + 1, String::new());
+                    self.cursor_y += 1;
+                    self.cursor_x = 0;
+                    self.mode = EditorMode::Insert;
+                    self.active_selection = None;
+                }
+
                 AppCommand::None
             }
             KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
