@@ -420,6 +420,38 @@ impl Editor {
 
     }
 
+    fn move_to_next_word(&mut self, meta: &Metadata) {
+        let current_line = &self.code[self.cursor_y];
+        let mut chars = current_line.chars().enumerate().skip(self.cursor_x);
+
+        // skip current word if we're in the middle of it
+        if let Some((_, c)) = chars.next() {
+            if !c.is_ascii_whitespace() {
+                while let Some((_, c)) = chars.next() {
+                    if c.is_ascii_whitespace() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // skip whitespace to the start of the next word
+        while let Some((idx, c)) = chars.next() {
+            if !c.is_ascii_whitespace() {
+                self.cursor_x = idx;
+                self.last_requested_x = self.cursor_x;
+                return;
+            }
+        }
+
+        // no more words on this line, move to the start of the next line
+        if self.cursor_y < self.code.len() - 1 {
+            self.move_cursor_down(1, meta);
+            self.cursor_x = 0;
+            self.skip_x_whitespace_forward();
+        }
+    }
+
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -613,6 +645,14 @@ impl Editor {
                 let max_cursor_x = self.max_cursor_x();
                 self.cursor_x = max_cursor_x;
                 self.last_requested_x = self.cursor_x;
+                AppCommand::None
+            }
+            KeyCode::Char('w') => {
+                self.move_to_next_word(meta);
+                AppCommand::None
+            }
+            KeyCode::Char('e') => {
+                // TODO
                 AppCommand::None
             }
             KeyCode::Char('i') => {
