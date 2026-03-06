@@ -1,5 +1,5 @@
 use std::{
-    fmt::{Debug, Write}, ops::{Not, Range}, sync::{Arc, RwLock}
+    fmt::{Debug, Write}, iter::Peekable, ops::{Not, Range}, sync::{Arc, RwLock}
 };
 
 use crate::{CodeArgs, project::{ChasmProject, ModulePath}};
@@ -452,6 +452,49 @@ impl Editor {
         }
     }
 
+    fn move_to_next_word_end(&mut self, meta: &Metadata) {
+        fn is_word_end(chars: &mut Peekable<impl Iterator<Item = (usize, char)>>) -> bool {
+            if let Some((_, next_c)) = chars.peek() {
+                next_c.is_ascii_whitespace()
+            } else {
+                true
+            }
+        }
+
+        let current_line = &self.code[self.cursor_y];
+        let mut chars = current_line.chars().enumerate().skip(self.cursor_x).peekable();
+
+        // skip current word if we're in the middle of it
+        if let Some((_, c)) = chars.next() {
+            if !(c.is_ascii_whitespace() || is_word_end(&mut chars)) {
+                // we're in a word and it's not the last character
+                while let Some((idx, c)) = chars.next() {
+                    if c.is_ascii_whitespace() {
+                        break;
+                    } else {
+                        self.cursor_x = idx;
+                        self.last_requested_x = self.cursor_x;
+                    }
+                }
+                return;
+            }
+        }
+
+        // otherwise skip to the next word, then move to the end of it
+        self.move_to_next_word(meta);
+        let current_line = &self.code[self.cursor_y];
+
+        let mut chars = current_line.chars().enumerate().skip(self.cursor_x);
+        while let Some((idx, c)) = chars.next() {
+            if c.is_ascii_whitespace() {
+                break;
+            } else {
+                self.cursor_x = idx;
+                self.last_requested_x = self.cursor_x;
+            }
+        }
+    }
+
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -652,7 +695,7 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('e') => {
-                // TODO
+                self.move_to_next_word_end(meta);
                 AppCommand::None
             }
             KeyCode::Char('i') => {
