@@ -420,6 +420,36 @@ impl Editor {
 
     }
 
+
+    fn skip_until_eol_or(&mut self, pred: fn(char) -> bool) {
+        let current_line = &self.code[self.cursor_y];
+        let mut chars = current_line.chars().enumerate().skip(self.cursor_x);
+
+        while let Some((idx, c)) = chars.next() {
+            if pred(c) {
+                break;
+            } else {
+                self.cursor_x = idx;
+                self.last_requested_x = self.cursor_x;
+            }
+        }
+    }
+
+    fn skip_until_line_start_or(&mut self, pred: fn(char) -> bool) {
+        let current_line = &self.code[self.cursor_y];
+        let line_len = current_line.len();
+        let mut chars = current_line.chars().rev().enumerate().skip(line_len - self.cursor_x);
+
+        while let Some((idx, c)) = chars.next() {
+            if pred(c) {
+                break;
+            } else {
+                self.cursor_x = line_len - idx - 1;
+                self.last_requested_x = self.cursor_x;
+            }
+        }
+    }
+
     fn move_to_next_word(&mut self, meta: &Metadata) {
         let current_line = &self.code[self.cursor_y];
         let mut chars = current_line.chars().enumerate().skip(self.cursor_x);
@@ -444,7 +474,7 @@ impl Editor {
             }
         }
 
-        // no more words on this line, move to the start of the next line
+        // move to the start of the next line if we hit EOL
         if self.cursor_y < self.code.len() - 1 {
             self.move_cursor_down(1, meta);
             self.cursor_x = 0;
@@ -453,46 +483,81 @@ impl Editor {
     }
 
     fn move_to_next_word_end(&mut self, meta: &Metadata) {
-        fn is_word_end(chars: &mut Peekable<impl Iterator<Item = (usize, char)>>) -> bool {
-            if let Some((_, next_c)) = chars.peek() {
-                next_c.is_ascii_whitespace()
-            } else {
-                true
-            }
+        fn is_whitespace(c: char) -> bool {
+            c.is_ascii_whitespace()
         }
 
         let current_line = &self.code[self.cursor_y];
         let mut chars = current_line.chars().enumerate().skip(self.cursor_x).peekable();
 
-        // skip current word if we're in the middle of it
+        // skip to the end of the current word if we're in the middle of one
         if let Some((_, c)) = chars.next() {
-            if !(c.is_ascii_whitespace() || is_word_end(&mut chars)) {
+            if !(c.is_ascii_whitespace() || is_word_boundary(&mut chars)) {
                 // we're in a word and it's not the last character
-                while let Some((idx, c)) = chars.next() {
-                    if c.is_ascii_whitespace() {
-                        break;
-                    } else {
-                        self.cursor_x = idx;
-                        self.last_requested_x = self.cursor_x;
-                    }
-                }
+                self.skip_until_eol_or(is_whitespace);
                 return;
             }
         }
 
         // otherwise skip to the next word, then move to the end of it
         self.move_to_next_word(meta);
-        let current_line = &self.code[self.cursor_y];
+        self.skip_until_eol_or(is_whitespace);
+    }
 
-        let mut chars = current_line.chars().enumerate().skip(self.cursor_x);
-        while let Some((idx, c)) = chars.next() {
-            if c.is_ascii_whitespace() {
-                break;
-            } else {
-                self.cursor_x = idx;
-                self.last_requested_x = self.cursor_x;
+    fn move_to_previous_word(&mut self, meta: &Metadata) {
+        let current_line = &self.code[self.cursor_y];
+        let line_len = current_line.len();
+        let mut chars = current_line.chars().rev().enumerate().skip(line_len - self.cursor_x);
+
+        // skip current word if we're in the middle of it
+        if let Some((_, c)) = chars.next() {
+            if !c.is_ascii_whitespace() {
+                while let Some((_, c)) = chars.next() {
+                    if c.is_ascii_whitespace() {
+                        break;
+                    }
+                }
             }
         }
+
+        // skip whitespace to the start of the next word
+        while let Some((idx, c)) = chars.next() {
+            if !c.is_ascii_whitespace() {
+                self.cursor_x = line_len - idx - 1;
+                self.last_requested_x = self.cursor_x;
+                return;
+            }
+        }
+
+        // move to the end of the prev line if we hit line start
+        if self.cursor_y > 0 {
+            self.move_cursor_up(1, meta);
+            self.cursor_x = self.max_cursor_x();
+            self.last_requested_x = self.cursor_x;
+        }
+    }
+
+    fn move_to_previous_word_start(&mut self, meta: &Metadata) {
+        fn is_whitespace(c: char) -> bool {
+            c.is_ascii_whitespace()
+        }
+
+        let current_line = &self.code[self.cursor_y];
+        let line_len = current_line.len();
+        let mut chars = current_line.chars().rev().enumerate().skip(line_len - self.cursor_x).peekable();
+
+        // skip to beginning of current word if we're in the middle of one
+        if let Some((_, c)) = chars.next() {
+            if !(c.is_ascii_whitespace() || is_word_boundary(&mut chars)) {
+                // we're in a word and it's not the last character
+                self.skip_until_line_start_or(is_whitespace);
+                return;
+            }
+        }
+
+        // otherwise skip to the previous word, then move to the beginning of it
+        self.move_to_previous_word(meta);
+        self.skip_until_line_start_or(is_whitespace);
     }
 
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
@@ -696,6 +761,10 @@ impl Editor {
             }
             KeyCode::Char('e') => {
                 self.move_to_next_word_end(meta);
+                AppCommand::None
+            }
+            KeyCode::Char('b') => {
+                self.move_to_previous_word_start(meta);
                 AppCommand::None
             }
             KeyCode::Char('i') => {
@@ -919,6 +988,14 @@ impl ChasmWidget for Editor {
                 }
             }
         }
+    }
+}
+
+fn is_word_boundary(chars: &mut Peekable<impl Iterator<Item = (usize, char)>>) -> bool {
+    if let Some((_, next_c)) = chars.peek() {
+        next_c.is_ascii_whitespace()
+    } else {
+        true
     }
 }
 
