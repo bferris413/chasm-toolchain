@@ -257,6 +257,43 @@ struct Position {
 }
 
 #[derive(Debug)]
+enum EditOpKind {
+    Insert,
+    Delete,
+}
+
+#[derive(Debug)]
+enum EditOp {
+    Insert { at: Position, content: String },
+    Delete { range: Range<Position> },
+}
+
+#[derive(Debug)]
+struct UndoRedoStack {
+    undo: Vec<EditOp>,
+    redo: Vec<EditOp>,
+}
+impl UndoRedoStack {
+    fn new() -> Self {
+        Self { undo: Vec::new(), redo: Vec::new() }
+    }
+
+    fn undo(&mut self) -> ! {
+
+        todo!()
+    }
+
+    fn redo(&mut self) -> ! {
+
+        todo!()
+    }
+
+    fn invert(self, op: EditOp) -> EditOp {
+        todo!()
+    }
+}
+
+#[derive(Debug)]
 struct Editor {
     module: ModulePath,
     code: Vec<String>,
@@ -270,6 +307,8 @@ struct Editor {
     // last x position explicitly moved to by the user
     last_requested_x: usize,
     active_selection: Option<VisualSelection>,
+
+    undo_redo: UndoRedoStack,
 }
 impl Editor {
     pub fn new(module: ModulePath) -> Self {
@@ -289,6 +328,7 @@ impl Editor {
             cursor_x: 0,
             last_requested_x: 0,
             active_selection: None,
+            undo_redo: UndoRedoStack::new(),
         }
     }
 
@@ -391,14 +431,19 @@ impl Editor {
             } else {
                 // multi-line selection, delete the selected range and merge lines
                 let first_line = &mut self.code[start.line];
-                first_line.replace_range(start.column.., "");
+                if ! first_line.is_empty() {
+                    first_line.replace_range(start.column.., "");
+                }
 
                 let last_line = &mut self.code[end.line];
-                last_line.replace_range(..=end.column, "");
+                if ! last_line.is_empty() {
+                    last_line.replace_range(..=end.column, "");
+                }
 
                 // remove all lines between start and end
-                self.code.splice((start.line + 1)..end.line, std::iter::empty());
-
+                let splice_start = if self.code[start.line].is_empty() { start.line } else { start.line + 1 };
+                self.code.splice(splice_start..end.line, std::iter::empty());
+                
                 // merge first and last line
                 let last_line = self.code.remove(start.line + 1);
                 self.code[start.line].push_str(&last_line);
@@ -721,10 +766,16 @@ impl Editor {
                 self.scroll_y = self.scroll_y.saturating_sub(1);
                 AppCommand::None
             }
-            KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
-                self.move_cursor_up(move_size, meta);
-                AppCommand::None
+            KeyCode::Char('u') => {
+                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                    let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
+                    self.move_cursor_up(move_size, meta);
+                    AppCommand::None
+                } else {
+                    self.undo_redo.undo();
+                    AppCommand::None
+                }
+
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let move_size = get_vertical_move_distance(key_event, meta);
@@ -857,6 +908,14 @@ impl Editor {
                 }
                 KeyCode::Delete => {
                     self.delete_forward();
+                    AppCommand::None
+                }
+                KeyCode::Enter => {
+                    let current_line = &mut self.code[self.cursor_y];
+                    let new_line = current_line.split_off(self.cursor_x);
+                    self.code.insert(self.cursor_y + 1, new_line);
+                    self.cursor_y += 1;
+                    self.cursor_x = 0;
                     AppCommand::None
                 }
                 _other => {
