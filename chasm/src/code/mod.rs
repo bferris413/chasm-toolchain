@@ -1,5 +1,5 @@
 use std::{
-    fmt::{Debug, Write}, iter::Peekable, ops::{Not, Range}, sync::{Arc, RwLock}
+    collections::VecDeque, fmt::{Debug, Write}, iter::Peekable, ops::{Not, Range}, sync::{Arc, RwLock}
 };
 
 use crate::{CodeArgs, project::{ChasmProject, ModulePath}};
@@ -256,40 +256,242 @@ struct Position {
     column: usize,
 }
 
-#[derive(Debug)]
-enum EditOpKind {
-    Insert,
-    Delete,
+#[derive(Clone, Debug)]
+enum StringOrChar {
+    String(String),
+    Char(char),
+}
+impl From<String> for StringOrChar {
+    fn from(s: String) -> Self {
+        StringOrChar::String(s)
+    }
+}
+impl From<char> for StringOrChar {
+    fn from(c: char) -> Self {
+        StringOrChar::Char(c)
+    }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+struct LinesInsert {
+    cur_line: StringOrChar,
+    new_lines: Vec<String>,
+    last_line: StringOrChar,
+}
+
+#[derive(Clone, Debug)]
+enum InsertContent {
+    StringOrChar(StringOrChar),
+    Lines(LinesInsert),
+}
+impl From<String> for InsertContent {
+    fn from(s: String) -> Self {
+        Self::StringOrChar(s.into())
+    }
+}
+impl From<char> for InsertContent {
+    fn from(c: char) -> Self {
+        Self::StringOrChar(c.into())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InsertOp {
+    at: Position,
+    content: InsertContent,
+    cursor_to: Position,
+}
+impl InsertOp {
+    fn invert(self, cursor_x: usize, cursor_y: usize) -> DeleteBackOp {
+        DeleteBackOp {
+            cursor_to: Position { line: cursor_y, column: cursor_x },
+            content: Some(self.content),
+            at: self.at,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DeleteBackOp {
+    cursor_to: Position,
+    content: Option<InsertContent>,
+    at: Position,
+}
+impl DeleteBackOp {
+    /// Currently panics if self.content.is_none()
+    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertOp {
+        InsertOp {
+            at: self.at,
+            content: self.content.unwrap(),
+            cursor_to: Position { line: cursor_y, column: cursor_x },
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DeleteForwardOp {
+    cursor_to: Position,
+    content: Option<InsertContent>,
+    at: Position,
+}
+impl DeleteForwardOp {
+    /// Currently panics if self.content.is_none()
+    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertOp {
+        InsertOp {
+            at: self.at,
+            content: self.content.unwrap(),
+            cursor_to: Position { line: self.cursor_to.line, column: self.cursor_to.column + 1 },
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DeleteXOp {
+    cursor_to: Position,
+    content: Option<InsertContent>,
+    at: Position,
+}
+impl DeleteXOp {
+    /// Currently panics if self.content.is_none()
+    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertOp {
+        InsertOp {
+            at: self.at,
+            content: self.content.unwrap(),
+            cursor_to: Position { line: self.cursor_to.line, column: self.cursor_to.column + 1 },
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SplitOp {
+    at: Position,
+    cursor_to: Position,
+}
+impl SplitOp {
+    fn invert(self, cursor_x: usize, cursor_y: usize) -> JoinOp {
+        JoinOp {
+            at: self.at,
+            cursor_to: self.at,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct JoinOp {
+    at: Position,
+    cursor_to: Position,
+}
+impl JoinOp {
+    fn invert(self, cursor_x: usize, cursor_y: usize) -> SplitOp {
+        SplitOp {
+            at: self.at,
+            cursor_to: self.cursor_to,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 enum EditOp {
-    Insert { at: Position, content: String },
-    Delete { range: Range<Position> },
+    Insert(InsertOp),
+    DeleteBack(DeleteBackOp),
+    DeleteForward(DeleteForwardOp),
+    DeleteX(DeleteXOp),
+    Split(SplitOp),
+    Join(JoinOp),
+}
+impl EditOp {
+    fn invert(self, cur_cursor_x: usize, cur_cursor_y: usize) -> EditOp {
+        match self {
+            EditOp::Insert(insert_op) => {
+                insert_op.invert(cur_cursor_x, cur_cursor_y).into()
+            }
+            EditOp::DeleteBack(delete_op) => {
+                delete_op.invert(cur_cursor_x, cur_cursor_y).into()
+            }
+            EditOp::Split(split_op) => {
+                split_op.invert(cur_cursor_x, cur_cursor_y).into()
+            }
+            EditOp::Join(join_op) => {
+                join_op.invert(cur_cursor_x, cur_cursor_y).into()
+            }
+            EditOp::DeleteForward(delete_op) => {
+                delete_op.invert(cur_cursor_x, cur_cursor_y).into()
+            }
+            EditOp::DeleteX(delete_op) => {
+                delete_op.invert(cur_cursor_x, cur_cursor_y).into()
+            }
+            _ => todo!(),
+            // EditOp::Delete { range, cursor_to } => {
+            //     panic!("Cannot invert delete operation without storing deleted content");
+            // }
+            // EditOp::Split { at, cursor_to } => {
+            //     EditOp::Insert { at: *at, content: StringOrChar::String(String::new()), cursor_to: Position { line: at.line + 1, column: 0 } }
+            // }
+        }
+    }
+}
+impl From<InsertOp> for EditOp {
+    fn from(insert_op: InsertOp) -> Self {
+        EditOp::Insert(insert_op)
+    }
+}
+impl From<DeleteBackOp> for EditOp {
+    fn from(delete_op: DeleteBackOp) -> Self {
+        EditOp::DeleteBack(delete_op)
+    }
+}
+impl From<SplitOp> for EditOp {
+    fn from(split_op: SplitOp) -> Self {
+        EditOp::Split(split_op)
+    }
+}
+impl From<JoinOp> for EditOp {
+    fn from(join_op: JoinOp) -> Self {
+        EditOp::Join(join_op)
+    }
+}
+impl From<DeleteForwardOp> for EditOp {
+    fn from(delete_op: DeleteForwardOp) -> Self {
+        EditOp::DeleteForward(delete_op)
+    }
+}
+impl From<DeleteXOp> for EditOp {
+    fn from(delete_op: DeleteXOp) -> Self {
+        EditOp::DeleteX(delete_op)
+    }
 }
 
 #[derive(Debug)]
 struct UndoRedoStack {
-    undo: Vec<EditOp>,
+    undo: VecDeque<EditOp>,
     redo: Vec<EditOp>,
+    cap: u16,
 }
 impl UndoRedoStack {
     fn new() -> Self {
-        Self { undo: Vec::new(), redo: Vec::new() }
+        Self { undo: VecDeque::new(), redo: Vec::new(), cap: 200 }
     }
 
-    fn undo(&mut self) -> ! {
+    fn undo(&mut self, cur_cursor_x: usize, cur_cursor_y: usize) -> Option<EditOp> {
+        let op = self.undo.pop_back();
 
-        todo!()
+        if let Some(ref op) = op {
+            self.redo.push(op.clone().invert(cur_cursor_x, cur_cursor_y));
+        }
+
+        op
     }
 
-    fn redo(&mut self) -> ! {
-
-        todo!()
+    fn redo(&mut self, cur_cursor_x: usize, cur_cursor_y: usize) -> Option<EditOp> {
+        self.redo.pop()
     }
 
-    fn invert(self, op: EditOp) -> EditOp {
-        todo!()
+    fn push(&mut self, op: EditOp) {
+        if self.undo.len() == self.cap as usize {
+            self.undo.pop_front();
+        }
+        self.undo.push_back(op);
+        self.redo.clear();
     }
 }
 
@@ -369,28 +571,91 @@ impl Editor {
         self.last_requested_x = self.cursor_x;
     }
 
-    fn delete_forward(&mut self) {
+    fn delete_x(&mut self) -> Option<EditOp> {
         if self.cursor_x < self.code[self.cursor_y].len() {
-            self.code[self.cursor_y].remove(self.cursor_x);
+            let text = self.code[self.cursor_y].remove(self.cursor_x).into();
+            let mut did_shift = false;
+            if self.cursor_x == self.code[self.cursor_y].len() && !self.code[self.cursor_y].is_empty() {
+                // we deleted the last character, move cursor left (Vim 'x' doesn't join lines)
+                self.move_cursor_left(1);
+                did_shift = true;
+            }
+
+            let mut new_pos = Position { line: self.cursor_y, column: self.cursor_x };
+            if did_shift {
+                new_pos.column += 1;
+            }
+
+            let edit = InsertOp {
+                at: Position { line: self.cursor_y, column: self.cursor_x },
+                content: text,
+                cursor_to: new_pos,
+            };
+
+            Some(edit.into())
+        } else {
+            None
+        }
+    }
+
+    fn delete_forward(&mut self) -> Option<EditOp> {
+        if self.cursor_x < self.code[self.cursor_y].len() {
+            let text = self.code[self.cursor_y].remove(self.cursor_x).into();
+
+            let edit = InsertOp {
+                at: Position { line: self.cursor_y, column: self.cursor_x },
+                content: text,
+                cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+            };
+
+            Some(edit.into())
         } else if self.cursor_x == self.code[self.cursor_y].len() && self.cursor_y < self.code.len() - 1 {
             // delete the logical newline by merging the current line with the next line
             let line_to_append = self.code.remove(self.cursor_y + 1);
             self.code[self.cursor_y].push_str(&line_to_append);
+
+            let edit = SplitOp {
+                at: Position { line: self.cursor_y, column: self.cursor_x },
+                cursor_to: Position { line: self.cursor_y, column: self.cursor_x }
+            };
+
+            Some(edit.into())
+        } else {
+            None
         }
     }
 
-    fn delete_backward(&mut self) {
+    fn delete_backward(&mut self) -> Option<EditOp> {
         if self.cursor_x > 0 {
-            self.code[self.cursor_y].remove(self.cursor_x - 1);
+            let c = self.code[self.cursor_y].remove(self.cursor_x - 1);
             self.cursor_x -= 1;
+
+            let inverse_op = InsertOp {
+                at: Position { line: self.cursor_y, column: self.cursor_x },
+                content: c.into(),
+                cursor_to: Position { line: self.cursor_y, column: self.cursor_x + 1 },
+            };
+
+            Some(inverse_op.into())
         } else if self.cursor_y > 0 {
             assert!(self.cursor_x == 0);
 
+            let old_cursor = Position { line: self.cursor_y, column: self.cursor_x };
             let prev_line_len = self.code[self.cursor_y - 1].len();
             let current_line = self.code.remove(self.cursor_y);
             self.cursor_y -= 1;
             self.code[self.cursor_y].push_str(&current_line);
             self.cursor_x = prev_line_len;
+            let split_at = Position { line: self.cursor_y, column: self.cursor_x };
+
+            let inverse_op = SplitOp {
+                at: split_at,
+                cursor_to: old_cursor,
+            };
+
+            Some(inverse_op.into())
+        } else {
+            None
         }
     }
 
@@ -605,6 +870,70 @@ impl Editor {
         self.skip_until_line_start_or(is_whitespace);
     }
 
+    fn move_to(&mut self, pos: Position, meta: &Metadata) {
+        self.cursor_y = pos.line;
+        self.cursor_x = pos.column;
+        self.last_requested_x = self.cursor_x;
+        self.snap_view_to_cursor(meta);
+    }
+
+    /// Applies the edit operation and returns the inverse if something was performed.
+    fn apply(&mut self, op: EditOp, meta: &Metadata) -> Option<EditOp> {
+        match op {
+            EditOp::Insert(insert_op) => {
+                let inverse_op = insert_op.clone().invert(self.cursor_x, self.cursor_y);
+
+                let line = &mut self.code[insert_op.at.line];
+                let col = insert_op.at.column;
+
+                match insert_op.content {
+                    InsertContent::Lines(line_insert) => {
+                        todo!()
+                    }
+                    InsertContent::StringOrChar(StringOrChar::String(s)) => {
+                        line.insert_str(col, &s);
+                    }
+                    InsertContent::StringOrChar(StringOrChar::Char(c)) => {
+                        line.insert(col, c);
+                    }
+                }
+
+                self.move_to(insert_op.cursor_to, meta);
+                Some(inverse_op.into())
+            }
+            EditOp::Split(split_op) => {
+                let line = &mut self.code[split_op.at.line];
+                let new_line = line.split_off(split_op.at.column);
+                self.code.insert(split_op.at.line + 1, new_line);
+                self.move_to(split_op.cursor_to, meta);
+
+                let inverse = split_op.invert(self.cursor_x, self.cursor_y);
+                Some(inverse.into())
+            }
+            EditOp::Join(join_op) => {
+                let current_line = self.code.remove(join_op.at.line + 1);
+                let line = &mut self.code[join_op.at.line];
+                line.push_str(&current_line);
+                self.move_to(join_op.cursor_to, meta);
+
+                let inverse = join_op.invert(self.cursor_x, self.cursor_y);
+                Some(inverse.into())
+            }
+            EditOp::DeleteBack(_delete_op) => {
+                let inverse_op = self.delete_backward();
+                inverse_op
+            }
+            EditOp::DeleteForward(_delete_op) => {
+                let inverse_op = self.delete_forward();
+                inverse_op
+            }
+            EditOp::DeleteX(_delete_op) => {
+                let inverse_op = self.delete_x();
+                inverse_op
+            }
+        }
+    }
+
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -655,7 +984,14 @@ impl Editor {
                 if let Some(selection) = self.active_selection.take() {
                     self.visual_delete(&selection, meta);
                 } else {
-                    self.delete_forward();
+                    let edit = DeleteXOp {
+                        at: Position { line: self.cursor_y, column: self.cursor_x },
+                        content: None,
+                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                    };
+                    if let Some(inverse_op) = self.apply(edit.into(), meta) {
+                        self.undo_redo.push(inverse_op);
+                    }
                 }
 
                 AppCommand::None
@@ -772,10 +1108,23 @@ impl Editor {
                     self.move_cursor_up(move_size, meta);
                     AppCommand::None
                 } else {
-                    self.undo_redo.undo();
+                    if let Some(op) = self.undo_redo.undo(self.cursor_x, self.cursor_y) {
+                        self.apply(op, meta);
+                    }
                     AppCommand::None
                 }
 
+            }
+            KeyCode::Char('r') => {
+                if ! key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                    return AppCommand::None;
+                }
+
+                if let Some(op) = self.undo_redo.redo(self.cursor_x, self.cursor_y) {
+                    self.apply(op, meta);
+                }
+
+                AppCommand::None
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let move_size = get_vertical_move_distance(key_event, meta);
@@ -898,24 +1247,51 @@ impl Editor {
                     AppCommand::None
                 }
                 KeyCode::Char(c) => {
-                    self.code[self.cursor_y].insert(self.cursor_x, c);
-                    self.cursor_x += 1;
+                    let insert_op = InsertOp {
+                        at: Position { line: self.cursor_y, column: self.cursor_x },
+                        content: c.into(),
+                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x + 1 },
+                    };
+
+                    let undo_op = self.apply(insert_op.into(), meta).unwrap();
+                    self.undo_redo.push(undo_op);
+
                     AppCommand::None
                 }
                 KeyCode::Backspace => {
-                    self.delete_backward();
+                    let delete_back = DeleteBackOp {
+                        at: Position { line: self.cursor_y, column: self.cursor_x },
+                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x.saturating_sub(1) },
+                        content: None,
+                    };
+                    if let Some(undo_op) = self.apply(delete_back.into(), meta) {
+                        self.undo_redo.push(undo_op);
+                    }
+
                     AppCommand::None
                 }
                 KeyCode::Delete => {
-                    self.delete_forward();
+                    let delete_forward = DeleteForwardOp {
+                        at: Position { line: self.cursor_y, column: self.cursor_x },
+                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                        content: None,
+                    };
+
+                    if let Some(undo_op) = self.apply(delete_forward.into(), meta) {
+                        self.undo_redo.push(undo_op);
+                    }
+
                     AppCommand::None
                 }
                 KeyCode::Enter => {
-                    let current_line = &mut self.code[self.cursor_y];
-                    let new_line = current_line.split_off(self.cursor_x);
-                    self.code.insert(self.cursor_y + 1, new_line);
-                    self.cursor_y += 1;
-                    self.cursor_x = 0;
+                    let split_op = SplitOp {
+                        at: Position { line: self.cursor_y, column: self.cursor_x },
+                        cursor_to: Position { line: self.cursor_y + 1, column: 0 },
+                    };
+
+                    let undo_op = self.apply(split_op.into(), meta).unwrap();
+                    self.undo_redo.push(undo_op);
+
                     AppCommand::None
                 }
                 _other => {
