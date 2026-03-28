@@ -273,32 +273,37 @@ impl From<char> for StringOrChar {
 }
 
 #[derive(Clone, Debug)]
-struct LinesInsert {
+struct Lines {
     cur_line: StringOrChar,
     new_lines: Vec<String>,
     last_line: StringOrChar,
 }
 
 #[derive(Clone, Debug)]
-enum InsertContent {
+enum Content {
     StringOrChar(StringOrChar),
-    Lines(LinesInsert),
+    Lines(Lines),
 }
-impl From<String> for InsertContent {
+impl From<String> for Content {
     fn from(s: String) -> Self {
         Self::StringOrChar(s.into())
     }
 }
-impl From<char> for InsertContent {
+impl From<char> for Content {
     fn from(c: char) -> Self {
         Self::StringOrChar(c.into())
+    }
+}
+impl From<Lines> for Content {
+    fn from(lines_insert: Lines) -> Self {
+        Self::Lines(lines_insert)
     }
 }
 
 #[derive(Clone, Debug)]
 struct InsertOp {
     at: Position,
-    content: InsertContent,
+    content: StringOrChar,
     cursor_to: Position,
 }
 impl InsertOp {
@@ -312,9 +317,24 @@ impl InsertOp {
 }
 
 #[derive(Clone, Debug)]
+struct InsertVisualOp {
+    selection: VisualSelection,
+    content: Content,
+    cursor_to: Position,
+}
+impl InsertVisualOp {
+    fn invert(self, cursor_x: usize, cursor_y: usize) -> DeleteVisualOp {
+        DeleteVisualOp {
+            selection: self.selection,
+            deleted: Some(self.content),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct DeleteBackOp {
     cursor_to: Position,
-    content: Option<InsertContent>,
+    content: Option<StringOrChar>,
     at: Position,
 }
 impl DeleteBackOp {
@@ -331,7 +351,7 @@ impl DeleteBackOp {
 #[derive(Clone, Debug)]
 struct DeleteForwardOp {
     cursor_to: Position,
-    content: Option<InsertContent>,
+    content: Option<StringOrChar>,
     at: Position,
 }
 impl DeleteForwardOp {
@@ -348,7 +368,7 @@ impl DeleteForwardOp {
 #[derive(Clone, Debug)]
 struct DeleteXOp {
     cursor_to: Position,
-    content: Option<InsertContent>,
+    content: Option<StringOrChar>,
     at: Position,
 }
 impl DeleteXOp {
@@ -423,6 +443,22 @@ impl DeleteLineOp {
 }
 
 #[derive(Clone, Debug)]
+struct DeleteVisualOp {
+    selection: VisualSelection,
+    deleted: Option<Content>,
+}
+impl DeleteVisualOp {
+    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertVisualOp {
+        let (start, _) = selection_absolute_order(&self.selection);
+        InsertVisualOp {
+            selection: self.selection,
+            content: self.deleted.unwrap(),
+            cursor_to: start,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 enum EditOp {
     Insert(InsertOp),
     InsertLine(InsertLineOp),
@@ -430,6 +466,8 @@ enum EditOp {
     DeleteBack(DeleteBackOp),
     DeleteForward(DeleteForwardOp),
     DeleteX(DeleteXOp),
+    DeleteVisual(DeleteVisualOp),
+    InsertVisual(InsertVisualOp),
     Split(SplitOp),
     Join(JoinOp),
 }
@@ -438,6 +476,9 @@ impl EditOp {
         match self {
             EditOp::Insert(insert_op) => {
                 insert_op.invert(cur_cursor_x, cur_cursor_y).into()
+            }
+            EditOp::InsertVisual(insert_visual_op) => {
+                insert_visual_op.invert(cur_cursor_x, cur_cursor_y).into()
             }
             EditOp::DeleteBack(delete_op) => {
                 delete_op.invert(cur_cursor_x, cur_cursor_y).into()
@@ -454,6 +495,9 @@ impl EditOp {
             EditOp::DeleteX(delete_op) => {
                 delete_op.invert(cur_cursor_x, cur_cursor_y).into()
             }
+            EditOp::DeleteVisual(delete_visual_op) => {
+                delete_visual_op.invert(cur_cursor_x, cur_cursor_y).into()
+            }
             EditOp::DeleteLine(delete_line_op) => {
                 delete_line_op.invert(cur_cursor_x, cur_cursor_y).into()
             }
@@ -466,6 +510,11 @@ impl EditOp {
 impl From<InsertOp> for EditOp {
     fn from(insert_op: InsertOp) -> Self {
         EditOp::Insert(insert_op)
+    }
+}
+impl From<InsertVisualOp> for EditOp {
+    fn from(insert_visual_op: InsertVisualOp) -> Self {
+        EditOp::InsertVisual(insert_visual_op)
     }
 }
 impl From<InsertLineOp> for EditOp {
@@ -481,6 +530,11 @@ impl From<DeleteLineOp> for EditOp {
 impl From<DeleteBackOp> for EditOp {
     fn from(delete_op: DeleteBackOp) -> Self {
         EditOp::DeleteBack(delete_op)
+    }
+}
+impl From<DeleteVisualOp> for EditOp {
+    fn from(delete_op: DeleteVisualOp) -> Self {
+        EditOp::DeleteVisual(delete_op)
     }
 }
 impl From<SplitOp> for EditOp {
@@ -526,7 +580,17 @@ impl UndoRedoStack {
     }
 
     fn redo(&mut self, cur_cursor_x: usize, cur_cursor_y: usize) -> Option<EditOp> {
-        self.redo.pop()
+        let op = self.redo.pop();
+
+        if let Some(ref op) = op {
+            if self.undo.len() == self.cap as usize {
+                self.undo.pop_front();
+            }
+
+            self.undo.push_back(op.clone().invert(cur_cursor_x, cur_cursor_y));
+        }
+
+        op
     }
 
     fn push(&mut self, op: EditOp) {
@@ -727,35 +791,50 @@ impl Editor {
         self.active_selection.is_some()
     }
 
-    fn visual_delete(&mut self, selection: &VisualSelection, meta: &Metadata) {
-        if selection.is_empty() {
-            self.delete_forward();
+    fn visual_delete(&mut self, op: DeleteVisualOp, meta: &Metadata) -> Option<EditOp> {
+        if op.selection.is_empty() {
+            self.delete_forward()
         } else {
-            let (start, end) = selection_absolute_order(&selection);
-            if start.line == end.line {
+            let (start, end) = selection_absolute_order(&op.selection);
+            let removed_content = if start.line == end.line {
                 // single line selection, delete the selected range
                 let line = &mut self.code[start.line];
-                line.replace_range(start.column..=end.column, "");
+                let removed: String = line.drain(start.column..=end.column).collect();
+                Content::StringOrChar(removed.into())
             } else {
                 // multi-line selection, delete the selected range and merge lines
+
+                let splice_start = if self.code[start.line].is_empty() { start.line } else { start.line + 1 };
+
                 let first_line = &mut self.code[start.line];
+                let mut first_line_removed = String::new();
                 if ! first_line.is_empty() {
-                    first_line.replace_range(start.column.., "");
+                    first_line_removed = first_line.drain(start.column..).collect();
                 }
 
                 let last_line = &mut self.code[end.line];
+                let mut last_line_removed = String::new();
                 if ! last_line.is_empty() {
-                    last_line.replace_range(..=end.column, "");
+                    last_line_removed = last_line.drain(..=end.column).collect();
                 }
 
                 // remove all lines between start and end
-                let splice_start = if self.code[start.line].is_empty() { start.line } else { start.line + 1 };
-                self.code.splice(splice_start..end.line, std::iter::empty());
-                
+                let spliced_lines = if end.line == splice_start {
+                    vec![]
+                } else {
+                    self.code.splice(splice_start..end.line, std::iter::empty()).collect()
+                };
+
                 // merge first and last line
                 let last_line = self.code.remove(start.line + 1);
                 self.code[start.line].push_str(&last_line);
-            }
+
+                Content::Lines(Lines {
+                    cur_line: first_line_removed.into(),
+                    new_lines: spliced_lines,
+                    last_line: last_line_removed.into(),
+                })
+            };
 
             let target_y = start.line;
             let y_distance = self.cursor_y.saturating_sub(target_y);
@@ -769,6 +848,14 @@ impl Editor {
                 let x_distance = target_x.saturating_sub(self.cursor_x);
                 self.move_cursor_right(x_distance); 
             }
+
+            let inverse_op = InsertVisualOp {
+                selection: op.selection,
+                content: removed_content,
+                cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+            };
+
+            Some(inverse_op.into())
         }
 
     }
@@ -920,28 +1007,69 @@ impl Editor {
         self.snap_view_to_cursor(meta);
     }
 
-    /// Applies the edit operation and returns the inverse if something was performed.
+    /// Applies the edit operation and returns the inverse *if* something was performed.
     fn apply(&mut self, op: EditOp, meta: &Metadata) -> Option<EditOp> {
         match op {
             EditOp::Insert(insert_op) => {
                 let inverse_op = insert_op.clone().invert(self.cursor_x, self.cursor_y);
 
-                let line = &mut self.code[insert_op.at.line];
+                let current_line = &mut self.code[insert_op.at.line];
                 let col = insert_op.at.column;
 
                 match insert_op.content {
-                    InsertContent::Lines(lines_insert) => {
-                        todo!()
+                    StringOrChar::String(s) => {
+                        current_line.insert_str(col, &s);
                     }
-                    InsertContent::StringOrChar(StringOrChar::String(s)) => {
-                        line.insert_str(col, &s);
-                    }
-                    InsertContent::StringOrChar(StringOrChar::Char(c)) => {
-                        line.insert(col, c);
+                    StringOrChar::Char(c) => {
+                        current_line.insert(col, c);
                     }
                 }
 
                 self.move_to(insert_op.cursor_to, meta);
+                Some(inverse_op.into())
+            }
+            EditOp::InsertVisual(insert_visual_op) => {
+                let inverse_op = insert_visual_op.clone().invert(self.cursor_x, self.cursor_y);
+
+                let (start, _end) = selection_absolute_order(&insert_visual_op.selection);
+                let current_line = &mut self.code[start.line];
+                let col = start.column;
+
+                match insert_visual_op.content {
+                    Content::Lines(mut lines) => {
+                        let mut last_line = current_line.split_off(col);
+
+                        match lines.cur_line {
+                            StringOrChar::String(ref s) => current_line.push_str(s),
+                            StringOrChar::Char(c) => current_line.push(c),
+                        }
+
+                        let last_line = match lines.last_line {
+                            StringOrChar::String(mut s) => {
+                                s.push_str(&last_line);
+                                s
+                            }
+                            StringOrChar::Char(c) => {
+                                last_line.insert(0, c);
+                                last_line
+                            }
+                        };
+
+                        self.code.insert(start.line + 1, last_line);
+
+                        while let Some(line) = lines.new_lines.pop() {
+                            self.code.insert(start.line + 1, line);
+                        }
+                    }
+                    Content::StringOrChar(StringOrChar::String(s)) => {
+                        current_line.insert_str(col, &s);
+                    }
+                    Content::StringOrChar(StringOrChar::Char(c)) => {
+                        current_line.insert(col, c);
+                    }
+                }
+                
+                self.move_to(insert_visual_op.cursor_to, meta);
                 Some(inverse_op.into())
             }
             EditOp::InsertLine(insert_line_op) => {
@@ -988,6 +1116,10 @@ impl Editor {
                 let inverse_op = self.delete_x();
                 inverse_op
             }
+            EditOp::DeleteVisual(delete_visual_op) => {
+                let inverse_op = self.visual_delete(delete_visual_op, meta);
+                inverse_op
+            },
         }
     }
 
@@ -1039,13 +1171,21 @@ impl Editor {
             }
             KeyCode::Char('x') => {
                 if let Some(selection) = self.active_selection.take() {
-                    self.visual_delete(&selection, meta);
+                    let visual_delete_op = DeleteVisualOp {
+                        selection,
+                        deleted: None,
+                    };
+                    
+                    if let Some(inverse_op) = self.apply(visual_delete_op.into(), meta) {
+                        self.undo_redo.push(inverse_op);
+                    }
                 } else {
                     let edit = DeleteXOp {
                         at: Position { line: self.cursor_y, column: self.cursor_x },
                         content: None,
                         cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
                     };
+
                     if let Some(inverse_op) = self.apply(edit.into(), meta) {
                         self.undo_redo.push(inverse_op);
                     }
@@ -1058,7 +1198,14 @@ impl Editor {
                     let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
                     self.move_cursor_down(move_size, meta);
                 } else if let Some(selection) = self.active_selection.take() {
-                    self.visual_delete(&selection, meta);
+                    let visual_delete = DeleteVisualOp {
+                        selection,
+                        deleted: None,
+                    };
+
+                    if let Some(inverse_op) = self.apply(visual_delete.into(), meta) {
+                        self.undo_redo.push(inverse_op);
+                    }
                 }
 
                 AppCommand::None
@@ -1102,7 +1249,14 @@ impl Editor {
             }
             KeyCode::Char('s') => {
                 if let Some(selection) = self.active_selection.take() {
-                    self.visual_delete(&selection, meta);
+                    let visual_delete = DeleteVisualOp {
+                        selection,
+                        deleted: None,
+                    };
+
+                    if let Some(inverse_op) = self.apply(visual_delete.into(), meta) {
+                        self.undo_redo.push(inverse_op);
+                    }
                 } else {
                     let is_empty = self.code[self.cursor_y].is_empty();
 
