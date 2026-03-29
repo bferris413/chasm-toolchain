@@ -277,6 +277,7 @@ struct Lines {
     cur_line: StringOrChar,
     new_lines: Vec<String>,
     last_line: StringOrChar,
+    last_line_split: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -791,6 +792,7 @@ impl Editor {
         self.active_selection.is_some()
     }
 
+    // TODO: refactor, my mental model for what this _should_ look like isn't clear yet
     fn visual_delete(&mut self, op: DeleteVisualOp, meta: &Metadata) -> Option<EditOp> {
         if op.selection.is_empty() {
             self.delete_forward()
@@ -798,9 +800,30 @@ impl Editor {
             let (start, end) = selection_absolute_order(&op.selection);
             let removed_content = if start.line == end.line {
                 // single line selection, delete the selected range
-                let line = &mut self.code[start.line];
-                let removed: String = line.drain(start.column..=end.column).collect();
-                Content::StringOrChar(removed.into())
+                let line_len = self.code[start.line].len();
+
+                if end.column == line_len && end.line < self.code.len() - 1 {
+                    // user is deleting the logical newline (like vim 'v$')
+
+                    // delete the logical newline by merging with the next line
+                    let line_to_append = self.code.remove(end.line + 1);
+                    self.code[end.line].push_str(&line_to_append);
+
+                    let line = &mut self.code[start.line];
+                    let removed: String = line.drain(start.column..end.column).collect();
+
+                    Content::Lines(Lines {
+                        cur_line: removed.into(),
+                        new_lines: vec![],
+                        last_line: String::new().into(),
+                        last_line_split: false,
+                    })
+                } else {
+                    let line = &mut self.code[start.line];
+                    let removed: String = line.drain(start.column..=end.column).collect();
+                    Content::StringOrChar(removed.into())
+                }
+
             } else {
                 // multi-line selection, delete the selected range and merge lines
 
@@ -812,10 +835,23 @@ impl Editor {
                     first_line_removed = first_line.drain(start.column..).collect();
                 }
 
-                let last_line = &mut self.code[end.line];
+                let last_line_len = self.code[end.line].len();
                 let mut last_line_removed = String::new();
-                if ! last_line.is_empty() {
-                    last_line_removed = last_line.drain(..=end.column).collect();
+                let mut last_line_split = false;
+
+                if last_line_len != 0 {
+                    if end.column == last_line_len && end.line < self.code.len() - 1 {
+                        // user is deleting the logical newline (like vim 'v$')
+
+                        // delete the logical newline by merging with the next line
+                        let line_to_append = self.code.remove(end.line + 1);
+                        self.code[end.line].push_str(&line_to_append);
+
+                        last_line_removed = self.code[end.line].drain(start.column..end.column).collect();
+                        last_line_split = true;
+                    } else {
+                        last_line_removed = self.code[end.line].drain(..=end.column).collect();
+                    }
                 }
 
                 // remove all lines between start and end
@@ -829,10 +865,16 @@ impl Editor {
                 let last_line = self.code.remove(start.line + 1);
                 self.code[start.line].push_str(&last_line);
 
+                if self.code[start.line].is_empty() && self.code.len() > 1 {
+                    self.code.remove(start.line);
+                    last_line_split = true;
+                }
+
                 Content::Lines(Lines {
                     cur_line: first_line_removed.into(),
                     new_lines: spliced_lines,
                     last_line: last_line_removed.into(),
+                    last_line_split,
                 })
             };
 
@@ -1044,18 +1086,36 @@ impl Editor {
                             StringOrChar::Char(c) => current_line.push(c),
                         }
 
+                        let last_line_len;
                         let last_line = match lines.last_line {
                             StringOrChar::String(mut s) => {
+                                last_line_len = s.len();
+
+                                if lines.last_line_split {
+                                    s.push_str("\n");
+                                }
+
                                 s.push_str(&last_line);
                                 s
                             }
                             StringOrChar::Char(c) => {
+                                last_line_len = 1;
                                 last_line.insert(0, c);
+
+                                if lines.last_line_split {
+                                    last_line.insert(1, '\n');
+                                }
+
                                 last_line
                             }
                         };
 
-                        self.code.insert(start.line + 1, last_line);
+                        let mut last_lines = last_line.split('\n').collect::<Vec<_>>();
+                        while let Some(line) = last_lines.pop() {
+                            self.code.insert(start.line + 1, line.to_string());
+                        }
+
+                        // self.code.insert(start.line + 1, last_line);
 
                         while let Some(line) = lines.new_lines.pop() {
                             self.code.insert(start.line + 1, line);
@@ -1388,6 +1448,12 @@ impl Editor {
             KeyCode::Char('$') => {
                 let max_cursor_x = self.max_cursor_x();
                 self.cursor_x = max_cursor_x;
+
+                if self.active_selection.is_some() && ! self.code[self.cursor_y].is_empty()  {
+                    // vim 'v$' includes the logical newline if we're not on an empty line
+                    self.cursor_x += 1;
+                }
+
                 self.last_requested_x = self.cursor_x;
                 AppCommand::None
             }
@@ -1607,7 +1673,6 @@ impl ChasmWidget for Editor {
             } else if selection_has_no_overlap(selection, &visible_range_y) {
                 // nothing to render
             } else {
-                // This is admittedly a bit of a mess
                 let (selection_start,selection_end) = selection_visible_range(selection, &visible_range_y);
                 for line_no in selection_start.line..=selection_end.line {
                     let render_line = (line_no - start) as u16;
