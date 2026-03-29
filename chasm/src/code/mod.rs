@@ -324,7 +324,7 @@ struct InsertVisualOp {
     cursor_to: Position,
 }
 impl InsertVisualOp {
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> DeleteVisualOp {
+    fn invert(self) -> DeleteVisualOp {
         DeleteVisualOp {
             selection: self.selection,
             deleted: Some(self.content),
@@ -357,7 +357,7 @@ struct DeleteForwardOp {
 }
 impl DeleteForwardOp {
     /// Currently panics if self.content.is_none()
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertOp {
+    fn invert(self) -> InsertOp {
         InsertOp {
             at: self.at,
             content: self.content.unwrap(),
@@ -373,8 +373,7 @@ struct DeleteXOp {
     at: Position,
 }
 impl DeleteXOp {
-    /// Currently panics if self.content.is_none()
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertOp {
+    fn invert(self) -> InsertOp {
         InsertOp {
             at: self.at,
             content: self.content.unwrap(),
@@ -389,7 +388,7 @@ struct SplitOp {
     cursor_to: Position,
 }
 impl SplitOp {
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> JoinOp {
+    fn invert(self) -> JoinOp {
         JoinOp {
             at: self.at,
             cursor_to: self.at,
@@ -403,7 +402,7 @@ struct JoinOp {
     cursor_to: Position,
 }
 impl JoinOp {
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> SplitOp {
+    fn invert(self) -> SplitOp {
         SplitOp {
             at: self.at,
             cursor_to: self.cursor_to,
@@ -418,7 +417,7 @@ struct InsertLineOp {
     cursor_to: Position,
 }
 impl InsertLineOp {
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> DeleteLineOp {
+    fn invert(self) -> DeleteLineOp {
         DeleteLineOp {
             y_pos: self.y_pos,
             content: self.content,
@@ -434,7 +433,7 @@ struct DeleteLineOp {
     cursor_to: Position,
 }
 impl DeleteLineOp {
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertLineOp {
+    fn invert(self) -> InsertLineOp {
         InsertLineOp {
             y_pos: self.y_pos,
             content: self.content,
@@ -479,31 +478,31 @@ impl EditOp {
                 insert_op.invert(cur_cursor_x, cur_cursor_y).into()
             }
             EditOp::InsertVisual(insert_visual_op) => {
-                insert_visual_op.invert(cur_cursor_x, cur_cursor_y).into()
+                insert_visual_op.invert().into()
             }
             EditOp::DeleteBack(delete_op) => {
                 delete_op.invert(cur_cursor_x, cur_cursor_y).into()
             }
             EditOp::Split(split_op) => {
-                split_op.invert(cur_cursor_x, cur_cursor_y).into()
+                split_op.invert().into()
             }
             EditOp::Join(join_op) => {
-                join_op.invert(cur_cursor_x, cur_cursor_y).into()
+                join_op.invert().into()
             }
             EditOp::DeleteForward(delete_op) => {
-                delete_op.invert(cur_cursor_x, cur_cursor_y).into()
+                delete_op.invert().into()
             }
             EditOp::DeleteX(delete_op) => {
-                delete_op.invert(cur_cursor_x, cur_cursor_y).into()
+                delete_op.invert().into()
             }
             EditOp::DeleteVisual(delete_visual_op) => {
                 delete_visual_op.invert(cur_cursor_x, cur_cursor_y).into()
             }
             EditOp::DeleteLine(delete_line_op) => {
-                delete_line_op.invert(cur_cursor_x, cur_cursor_y).into()
+                delete_line_op.invert().into()
             }
             EditOp::InsertLine(insert_line_op) => {
-                insert_line_op.invert(cur_cursor_x, cur_cursor_y).into()
+                insert_line_op.invert().into()
             }
         }
     }
@@ -1071,7 +1070,7 @@ impl Editor {
                 Some(inverse_op.into())
             }
             EditOp::InsertVisual(insert_visual_op) => {
-                let inverse_op = insert_visual_op.clone().invert(self.cursor_x, self.cursor_y);
+                let inverse_op = insert_visual_op.clone().invert();
 
                 let (start, _end) = selection_absolute_order(&insert_visual_op.selection);
                 let current_line = &mut self.code[start.line];
@@ -1086,11 +1085,8 @@ impl Editor {
                             StringOrChar::Char(c) => current_line.push(c),
                         }
 
-                        let last_line_len;
                         let last_line = match lines.last_line {
                             StringOrChar::String(mut s) => {
-                                last_line_len = s.len();
-
                                 if lines.last_line_split {
                                     s.push_str("\n");
                                 }
@@ -1099,7 +1095,6 @@ impl Editor {
                                 s
                             }
                             StringOrChar::Char(c) => {
-                                last_line_len = 1;
                                 last_line.insert(0, c);
 
                                 if lines.last_line_split {
@@ -1133,14 +1128,14 @@ impl Editor {
                 Some(inverse_op.into())
             }
             EditOp::InsertLine(insert_line_op) => {
-                let inverse_op = insert_line_op.clone().invert(self.cursor_x, self.cursor_y);
+                let inverse_op = insert_line_op.clone().invert();
 
                 self.code.insert(insert_line_op.y_pos, insert_line_op.content);
                 self.move_to(insert_line_op.cursor_to, meta);
                 Some(inverse_op.into())
             }
             EditOp::DeleteLine(delete_line_op) => {
-                let inverse_op = delete_line_op.clone().invert(self.cursor_x, self.cursor_y);
+                let inverse_op = delete_line_op.clone().invert();
 
                 self.code.remove(delete_line_op.y_pos);
                 self.move_to(delete_line_op.cursor_to, meta);
@@ -1152,7 +1147,7 @@ impl Editor {
                 self.code.insert(split_op.at.line + 1, new_line);
                 self.move_to(split_op.cursor_to, meta);
 
-                let inverse = split_op.invert(self.cursor_x, self.cursor_y);
+                let inverse = split_op.invert();
                 Some(inverse.into())
             }
             EditOp::Join(join_op) => {
@@ -1161,7 +1156,7 @@ impl Editor {
                 line.push_str(&current_line);
                 self.move_to(join_op.cursor_to, meta);
 
-                let inverse = join_op.invert(self.cursor_x, self.cursor_y);
+                let inverse = join_op.invert();
                 Some(inverse.into())
             }
             EditOp::DeleteBack(_delete_op) => {
