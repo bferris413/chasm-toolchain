@@ -817,10 +817,23 @@ impl Editor {
                         last_line: String::new().into(),
                         last_line_split: false,
                     })
+                } else if end.column == self.code[start.line].len() {
+
+                    let line = &mut self.code[start.line];
+                    let removed: String = line.drain(start.column..end.column).collect();
+
+                    Content::Lines(Lines {
+                        cur_line: removed.into(),
+                        new_lines: vec![],
+                        last_line: String::new().into(),
+                        last_line_split: false,
+                    })
+
                 } else {
                     let line = &mut self.code[start.line];
                     let removed: String = line.drain(start.column..=end.column).collect();
                     Content::StringOrChar(removed.into())
+
                 }
 
             } else {
@@ -846,7 +859,10 @@ impl Editor {
                         let line_to_append = self.code.remove(end.line + 1);
                         self.code[end.line].push_str(&line_to_append);
 
-                        last_line_removed = self.code[end.line].drain(start.column..end.column).collect();
+                        last_line_removed = self.code[end.line].drain(..end.column).collect();
+                        last_line_split = true;
+                    } else if end.column == last_line_len {
+                        last_line_removed = self.code[end.line].drain(..end.column).collect();
                         last_line_split = true;
                     } else {
                         last_line_removed = self.code[end.line].drain(..=end.column).collect();
