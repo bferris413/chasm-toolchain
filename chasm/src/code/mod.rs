@@ -306,11 +306,49 @@ struct InsertOp {
     at: Position,
     content: StringOrChar,
     cursor_to: Position,
+    cursor_from: Position,
 }
 impl InsertOp {
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> DeleteBackOp {
+    fn invert(self) -> DeleteOp {
+        DeleteOp {
+            cursor_to: self.cursor_from,
+            cursor_from: self.cursor_to,
+            content: Some(self.content),
+            at: self.at,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DeleteOp {
+    cursor_to: Position,
+    cursor_from: Position,
+    content: Option<StringOrChar>,
+    at: Position,
+}
+impl DeleteOp {
+    fn invert(self) -> InsertOp {
+        InsertOp {
+            at: self.at,
+            content: self.content.unwrap(),
+            cursor_to: self.cursor_from,
+            cursor_from: self.cursor_to,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InsertSingleOp {
+    at: Position,
+    content: char,
+    cursor_to: Position,
+    cursor_from: Position,
+}
+impl InsertSingleOp {
+    fn invert(self) -> DeleteBackOp {
         DeleteBackOp {
-            cursor_to: Position { line: cursor_y, column: cursor_x },
+            cursor_to: self.cursor_from,
+            cursor_from: self.cursor_to,
             content: Some(self.content),
             at: self.at,
         }
@@ -322,6 +360,7 @@ struct InsertVisualOp {
     selection: VisualSelection,
     content: Content,
     cursor_to: Position,
+    cursor_from: Position,
 }
 impl InsertVisualOp {
     fn invert(self) -> DeleteVisualOp {
@@ -335,16 +374,18 @@ impl InsertVisualOp {
 #[derive(Clone, Debug)]
 struct DeleteBackOp {
     cursor_to: Position,
-    content: Option<StringOrChar>,
+    cursor_from: Position,
+    content: Option<char>,
     at: Position,
 }
 impl DeleteBackOp {
     /// Currently panics if self.content.is_none()
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertOp {
-        InsertOp {
+    fn invert(self) -> InsertSingleOp {
+        InsertSingleOp {
             at: self.at,
             content: self.content.unwrap(),
-            cursor_to: Position { line: cursor_y, column: cursor_x },
+            cursor_to: self.cursor_from,
+            cursor_from: self.cursor_to,
         }
     }
 }
@@ -352,16 +393,18 @@ impl DeleteBackOp {
 #[derive(Clone, Debug)]
 struct DeleteForwardOp {
     cursor_to: Position,
-    content: Option<StringOrChar>,
+    cursor_from: Position,
+    content: Option<char>,
     at: Position,
 }
 impl DeleteForwardOp {
     /// Currently panics if self.content.is_none()
-    fn invert(self) -> InsertOp {
-        InsertOp {
+    fn invert(self) -> InsertSingleOp {
+        InsertSingleOp {
             at: self.at,
             content: self.content.unwrap(),
-            cursor_to: Position { line: self.cursor_to.line, column: self.cursor_to.column + 1 },
+            cursor_to: self.cursor_from,
+            cursor_from: self.cursor_to,
         }
     }
 }
@@ -369,15 +412,17 @@ impl DeleteForwardOp {
 #[derive(Clone, Debug)]
 struct DeleteXOp {
     cursor_to: Position,
-    content: Option<StringOrChar>,
+    cursor_from: Position,
+    content: Option<char>,
     at: Position,
 }
 impl DeleteXOp {
-    fn invert(self) -> InsertOp {
-        InsertOp {
+    fn invert(self) -> InsertSingleOp {
+        InsertSingleOp {
             at: self.at,
             content: self.content.unwrap(),
-            cursor_to: Position { line: self.cursor_to.line, column: self.cursor_to.column + 1 },
+            cursor_to: self.cursor_from,
+            cursor_from: self.cursor_to,
         }
     }
 }
@@ -386,12 +431,14 @@ impl DeleteXOp {
 struct SplitOp {
     at: Position,
     cursor_to: Position,
+    cursor_from: Position,
 }
 impl SplitOp {
     fn invert(self) -> JoinOp {
         JoinOp {
             at: self.at,
-            cursor_to: self.at,
+            cursor_to: self.cursor_from,
+            cursor_from: self.cursor_to,
         }
     }
 }
@@ -400,12 +447,14 @@ impl SplitOp {
 struct JoinOp {
     at: Position,
     cursor_to: Position,
+    cursor_from: Position,
 }
 impl JoinOp {
     fn invert(self) -> SplitOp {
         SplitOp {
             at: self.at,
-            cursor_to: self.cursor_to,
+            cursor_to: self.cursor_from,
+            cursor_from: self.cursor_to,
         }
     }
 }
@@ -415,6 +464,7 @@ struct InsertLineOp {
     y_pos: usize,
     content: String,
     cursor_to: Position,
+    cursor_from: Position,
 }
 impl InsertLineOp {
     fn invert(self) -> DeleteLineOp {
@@ -422,6 +472,7 @@ impl InsertLineOp {
             y_pos: self.y_pos,
             content: self.content,
             cursor_to: self.cursor_to,
+            cursor_from: self.cursor_from,
         }
     }
 }
@@ -431,6 +482,7 @@ struct DeleteLineOp {
     y_pos: usize,
     content: String,
     cursor_to: Position,
+    cursor_from: Position,
 }
 impl DeleteLineOp {
     fn invert(self) -> InsertLineOp {
@@ -438,6 +490,7 @@ impl DeleteLineOp {
             y_pos: self.y_pos,
             content: self.content,
             cursor_to: self.cursor_to,
+            cursor_from: self.cursor_from,
         }
     }
 }
@@ -448,12 +501,13 @@ struct DeleteVisualOp {
     deleted: Option<Content>,
 }
 impl DeleteVisualOp {
-    fn invert(self, cursor_x: usize, cursor_y: usize) -> InsertVisualOp {
+    fn invert(self) -> InsertVisualOp {
         let (start, _) = selection_absolute_order(&self.selection);
         InsertVisualOp {
             selection: self.selection,
             content: self.deleted.unwrap(),
             cursor_to: start,
+            cursor_from: start,
         }
     }
 }
@@ -461,7 +515,9 @@ impl DeleteVisualOp {
 #[derive(Clone, Debug)]
 enum EditOp {
     Insert(InsertOp),
+    InsertSingle(InsertSingleOp),
     InsertLine(InsertLineOp),
+    Delete(DeleteOp),
     DeleteLine(DeleteLineOp),
     DeleteBack(DeleteBackOp),
     DeleteForward(DeleteForwardOp),
@@ -472,16 +528,19 @@ enum EditOp {
     Join(JoinOp),
 }
 impl EditOp {
-    fn invert(self, cur_cursor_x: usize, cur_cursor_y: usize) -> EditOp {
+    fn invert(self) -> EditOp {
         match self {
             EditOp::Insert(insert_op) => {
-                insert_op.invert(cur_cursor_x, cur_cursor_y).into()
+                insert_op.invert().into()
+            }
+            EditOp::InsertSingle(insert_single_op) => {
+                insert_single_op.invert().into()
             }
             EditOp::InsertVisual(insert_visual_op) => {
                 insert_visual_op.invert().into()
             }
             EditOp::DeleteBack(delete_op) => {
-                delete_op.invert(cur_cursor_x, cur_cursor_y).into()
+                delete_op.invert().into()
             }
             EditOp::Split(split_op) => {
                 split_op.invert().into()
@@ -489,14 +548,17 @@ impl EditOp {
             EditOp::Join(join_op) => {
                 join_op.invert().into()
             }
-            EditOp::DeleteForward(delete_op) => {
+            EditOp::Delete(delete_op) => {
                 delete_op.invert().into()
+            }
+            EditOp::DeleteForward(delete_fw_op) => {
+                delete_fw_op.invert().into()
             }
             EditOp::DeleteX(delete_op) => {
                 delete_op.invert().into()
             }
             EditOp::DeleteVisual(delete_visual_op) => {
-                delete_visual_op.invert(cur_cursor_x, cur_cursor_y).into()
+                delete_visual_op.invert().into()
             }
             EditOp::DeleteLine(delete_line_op) => {
                 delete_line_op.invert().into()
@@ -512,6 +574,11 @@ impl From<InsertOp> for EditOp {
         EditOp::Insert(insert_op)
     }
 }
+impl From<InsertSingleOp> for EditOp {
+    fn from(insert_single_op: InsertSingleOp) -> Self {
+        EditOp::InsertSingle(insert_single_op)
+    }
+}
 impl From<InsertVisualOp> for EditOp {
     fn from(insert_visual_op: InsertVisualOp) -> Self {
         EditOp::InsertVisual(insert_visual_op)
@@ -520,6 +587,11 @@ impl From<InsertVisualOp> for EditOp {
 impl From<InsertLineOp> for EditOp {
     fn from(insert_line_op: InsertLineOp) -> Self {
         EditOp::InsertLine(insert_line_op)
+    }
+}
+impl From<DeleteOp> for EditOp {
+    fn from(delete_op: DeleteOp) -> Self {
+        EditOp::Delete(delete_op)
     }
 }
 impl From<DeleteLineOp> for EditOp {
@@ -569,17 +641,17 @@ impl UndoRedoStack {
         Self { undo: VecDeque::new(), redo: Vec::new(), cap: 200 }
     }
 
-    fn undo(&mut self, cur_cursor_x: usize, cur_cursor_y: usize) -> Option<EditOp> {
+    fn undo(&mut self) -> Option<EditOp> {
         let op = self.undo.pop_back();
 
         if let Some(ref op) = op {
-            self.redo.push(op.clone().invert(cur_cursor_x, cur_cursor_y));
+            self.redo.push(op.clone().invert());
         }
 
         op
     }
 
-    fn redo(&mut self, cur_cursor_x: usize, cur_cursor_y: usize) -> Option<EditOp> {
+    fn redo(&mut self) -> Option<EditOp> {
         let op = self.redo.pop();
 
         if let Some(ref op) = op {
@@ -587,7 +659,7 @@ impl UndoRedoStack {
                 self.undo.pop_front();
             }
 
-            self.undo.push_back(op.clone().invert(cur_cursor_x, cur_cursor_y));
+            self.undo.push_back(op.clone().invert());
         }
 
         op
@@ -679,6 +751,7 @@ impl Editor {
     }
 
     fn delete_x(&mut self) -> Option<EditOp> {
+        let old_pos = Position { line: self.cursor_y, column: self.cursor_x };
         if self.cursor_x < self.code[self.cursor_y].len() {
             let text = self.code[self.cursor_y].remove(self.cursor_x).into();
             let mut did_shift = false;
@@ -693,10 +766,11 @@ impl Editor {
                 new_pos.column += 1;
             }
 
-            let edit = InsertOp {
+            let edit = InsertSingleOp {
                 at: Position { line: self.cursor_y, column: self.cursor_x },
                 content: text,
                 cursor_to: new_pos,
+                cursor_from: old_pos,
             };
 
             Some(edit.into())
@@ -709,10 +783,11 @@ impl Editor {
         if self.cursor_x < self.code[self.cursor_y].len() {
             let text = self.code[self.cursor_y].remove(self.cursor_x).into();
 
-            let edit = InsertOp {
+            let edit = InsertSingleOp {
                 at: Position { line: self.cursor_y, column: self.cursor_x },
                 content: text,
                 cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
             };
 
             Some(edit.into())
@@ -723,7 +798,8 @@ impl Editor {
 
             let edit = SplitOp {
                 at: Position { line: self.cursor_y, column: self.cursor_x },
-                cursor_to: Position { line: self.cursor_y, column: self.cursor_x }
+                cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
             };
 
             Some(edit.into())
@@ -736,11 +812,13 @@ impl Editor {
         if self.cursor_x > 0 {
             let c = self.code[self.cursor_y].remove(self.cursor_x - 1);
             self.cursor_x -= 1;
+            self.last_requested_x = self.cursor_x;
 
-            let inverse_op = InsertOp {
+            let inverse_op = InsertSingleOp {
                 at: Position { line: self.cursor_y, column: self.cursor_x },
                 content: c.into(),
                 cursor_to: Position { line: self.cursor_y, column: self.cursor_x + 1 },
+                cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
             };
 
             Some(inverse_op.into())
@@ -753,11 +831,13 @@ impl Editor {
             self.cursor_y -= 1;
             self.code[self.cursor_y].push_str(&current_line);
             self.cursor_x = prev_line_len;
+            self.last_requested_x = self.cursor_x;
             let split_at = Position { line: self.cursor_y, column: self.cursor_x };
 
             let inverse_op = SplitOp {
                 at: split_at,
                 cursor_to: old_cursor,
+                cursor_from: split_at,
             };
 
             Some(inverse_op.into())
@@ -796,7 +876,9 @@ impl Editor {
         if op.selection.is_empty() {
             self.delete_forward()
         } else {
+            let old_pos = Position { line: self.cursor_y, column: self.cursor_x };
             let (start, end) = selection_absolute_order(&op.selection);
+
             let removed_content = if start.line == end.line {
                 // single line selection, delete the selected range
                 let line_len = self.code[start.line].len();
@@ -838,7 +920,6 @@ impl Editor {
 
             } else {
                 // multi-line selection, delete the selected range and merge lines
-
                 let splice_start = if self.code[start.line].is_empty() { start.line } else { start.line + 1 };
 
                 let first_line = &mut self.code[start.line];
@@ -910,6 +991,7 @@ impl Editor {
                 selection: op.selection,
                 content: removed_content,
                 cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                cursor_from: old_pos,
             };
 
             Some(inverse_op.into())
@@ -1060,6 +1142,7 @@ impl Editor {
     fn move_to(&mut self, pos: Position, meta: &Metadata) {
         self.cursor_y = pos.line;
         self.cursor_x = pos.column;
+        self.cursor_x = self.cursor_x.min(self.max_cursor_x());
         self.last_requested_x = self.cursor_x;
         self.snap_view_to_cursor(meta);
     }
@@ -1068,14 +1151,13 @@ impl Editor {
     fn apply(&mut self, op: EditOp, meta: &Metadata) -> Option<EditOp> {
         match op {
             EditOp::Insert(insert_op) => {
-                let inverse_op = insert_op.clone().invert(self.cursor_x, self.cursor_y);
-
+                let inverse_op = insert_op.clone().invert();
                 let current_line = &mut self.code[insert_op.at.line];
                 let col = insert_op.at.column;
 
                 match insert_op.content {
-                    StringOrChar::String(s) => {
-                        current_line.insert_str(col, &s);
+                    StringOrChar::String(ref s) => {
+                        current_line.insert_str(col, s);
                     }
                     StringOrChar::Char(c) => {
                         current_line.insert(col, c);
@@ -1083,6 +1165,37 @@ impl Editor {
                 }
 
                 self.move_to(insert_op.cursor_to, meta);
+                Some(inverse_op.into())
+            }
+            EditOp::Delete(delete_op) => {
+                let inverse_op = delete_op.clone().invert();
+
+                let current_line = &mut self.code[delete_op.at.line];
+                let col = delete_op.at.column;
+
+                match delete_op.content.unwrap() {
+                    StringOrChar::String(ref s) => {
+                        current_line.replace_range(col..col + s.len(), "");
+                    }
+                    StringOrChar::Char(_) => {
+                        current_line.remove(col);
+                    }
+                }
+
+                self.move_to(delete_op.cursor_to, meta);
+                Some(inverse_op.into())
+
+            }
+            EditOp::InsertSingle(insert_single_op) => {
+                let inverse_op = insert_single_op.clone().invert();
+
+                let current_line = &mut self.code[insert_single_op.at.line];
+                let col = insert_single_op.at.column;
+
+                let c = insert_single_op.content;
+                current_line.insert(col, c);
+
+                self.move_to(insert_single_op.cursor_to, meta);
                 Some(inverse_op.into())
             }
             EditOp::InsertVisual(insert_visual_op) => {
@@ -1255,6 +1368,7 @@ impl Editor {
                         at: Position { line: self.cursor_y, column: self.cursor_x },
                         content: None,
                         cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
                     };
 
                     if let Some(inverse_op) = self.apply(edit.into(), meta) {
@@ -1335,6 +1449,7 @@ impl Editor {
                         let delete_forward = DeleteForwardOp {
                             at: Position { line: self.cursor_y, column: self.cursor_x },
                             cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                            cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
                             content: None,
                         };
 
@@ -1362,12 +1477,14 @@ impl Editor {
                             y_pos: 0,
                             content: String::new(),
                             cursor_to: Position { line: 0, column: 0 },
+                            cursor_from: Position { line: 0, column: 0 },
                         }.into()
                     } else {
                         InsertLineOp {
                             y_pos: self.cursor_y,
                             content: String::new(),
                             cursor_to: Position { line: self.cursor_y, column: 0 },
+                            cursor_from: Position { line: self.cursor_y, column: 0 },
                         }.into()
                     };
 
@@ -1391,6 +1508,7 @@ impl Editor {
                         y_pos: self.cursor_y + 1,
                         content: String::new(),
                         cursor_to: Position { line: self.cursor_y + 1, column: 0 },
+                        cursor_from: Position { line: self.cursor_y, column: 0 },
                     };
 
                     let inverse_op = self.apply(insert_line_op.into(), meta).unwrap();
@@ -1415,7 +1533,7 @@ impl Editor {
                     self.move_cursor_up(move_size, meta);
                     AppCommand::None
                 } else {
-                    if let Some(op) = self.undo_redo.undo(self.cursor_x, self.cursor_y) {
+                    if let Some(op) = self.undo_redo.undo() {
                         self.apply(op, meta);
                     }
                     AppCommand::None
@@ -1427,7 +1545,7 @@ impl Editor {
                     return AppCommand::None;
                 }
 
-                if let Some(op) = self.undo_redo.redo(self.cursor_x, self.cursor_y) {
+                if let Some(op) = self.undo_redo.redo() {
                     self.apply(op, meta);
                 }
 
@@ -1560,10 +1678,11 @@ impl Editor {
                     AppCommand::None
                 }
                 KeyCode::Char(c) => {
-                    let insert_op = InsertOp {
+                    let insert_op = InsertSingleOp {
                         at: Position { line: self.cursor_y, column: self.cursor_x },
                         content: c.into(),
                         cursor_to: Position { line: self.cursor_y, column: self.cursor_x + 1 },
+                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
                     };
 
                     let undo_op = self.apply(insert_op.into(), meta).unwrap();
@@ -1575,6 +1694,7 @@ impl Editor {
                     let delete_back = DeleteBackOp {
                         at: Position { line: self.cursor_y, column: self.cursor_x },
                         cursor_to: Position { line: self.cursor_y, column: self.cursor_x.saturating_sub(1) },
+                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
                         content: None,
                     };
                     if let Some(undo_op) = self.apply(delete_back.into(), meta) {
@@ -1587,6 +1707,7 @@ impl Editor {
                     let delete_forward = DeleteForwardOp {
                         at: Position { line: self.cursor_y, column: self.cursor_x },
                         cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
                         content: None,
                     };
 
@@ -1600,9 +1721,26 @@ impl Editor {
                     let split_op = SplitOp {
                         at: Position { line: self.cursor_y, column: self.cursor_x },
                         cursor_to: Position { line: self.cursor_y + 1, column: 0 },
+                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
                     };
 
                     let undo_op = self.apply(split_op.into(), meta).unwrap();
+                    self.undo_redo.push(undo_op);
+
+                    AppCommand::None
+                }
+                KeyCode::Tab => {
+                    let content = " ".repeat(4);
+                    let len = content.len();
+
+                    let insert_op = InsertOp {
+                        at: Position { line: self.cursor_y, column: self.cursor_x },
+                        content: StringOrChar::String(content),
+                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x + len },
+                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
+                    };
+
+                    let undo_op = self.apply(insert_op.into(), meta).unwrap();
                     self.undo_redo.push(undo_op);
 
                     AppCommand::None
