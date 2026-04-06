@@ -461,11 +461,3 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 
     Rect::new(x, y, width, height)
 }
-
-fn digits_in(n: u64) -> u32 {
-    if n == 0 {
-        1
-    } else {
-        n.ilog10() + 1
-    }
-}

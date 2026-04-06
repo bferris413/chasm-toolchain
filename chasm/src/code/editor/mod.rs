@@ -953,7 +953,10 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('v') => {
-                self.toggle_selection();
+                if key_event.modifiers.is_empty() {
+                    self.toggle_selection();
+                }
+
                 AppCommand::None
             }
             _other => {
