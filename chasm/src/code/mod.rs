@@ -7,7 +7,7 @@ use std::{
 use crate::{CodeArgs, code::editor::Editor, project::{ChasmProject, ModulePath}};
 
 use anyhow::Result;
-use crossterm::{event::{self, Event, KeyCode, KeyEventKind}};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     DefaultTerminal,
     Frame,
@@ -41,7 +41,7 @@ impl WidgetRef for &dyn ChasmWidget {
 
 pub fn code(args: CodeArgs) -> Result<()> {
     let project = ChasmProject::load(args.project_dir.0)?;
-    ratatui::run(|terminal| App::new(project).run(terminal))
+    ratatui::run(|term| App::new(project).run(term))
 }
 
 #[derive(Debug)]

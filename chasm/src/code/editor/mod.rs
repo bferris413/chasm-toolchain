@@ -3,6 +3,7 @@ mod undo_redo;
 
 use std::{iter::Peekable, ops::Range};
 
+use arboard::Clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -22,7 +23,6 @@ enum EditorMode {
     Insert,
 }
 
-#[derive(Debug)]
 pub (super) struct Editor {
     module: ModulePath,
     code: Vec<String>,
@@ -38,6 +38,22 @@ pub (super) struct Editor {
     active_selection: Option<VisualSelection>,
 
     undo_redo: UndoRedoStack,
+    clipboard: Result<Clipboard, arboard::Error>,
+}
+impl std::fmt::Debug for Editor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Editor")
+            .field("module", &self.module)
+            .field("code", &"<code hidden>")
+            .field("scroll_y", &self.scroll_y)
+            .field("mode", &self.mode)
+            .field("cursor_y", &self.cursor_y)
+            .field("cursor_x", &self.cursor_x)
+            .field("last_requested_x", &self.last_requested_x)
+            .field("active_selection", &self.active_selection)
+            .field("clipboard", &self.clipboard.as_ref().map(|_| "<clipboard>"))
+            .finish()
+    }
 }
 impl Editor {
     pub (super) fn new(module: ModulePath) -> Self {
@@ -58,6 +74,7 @@ impl Editor {
             last_requested_x: 0,
             active_selection: None,
             undo_redo: UndoRedoStack::new(),
+            clipboard: Clipboard::new(),
         }
     }
 
@@ -493,6 +510,66 @@ impl Editor {
         self.cursor_x = self.cursor_x.min(self.max_cursor_x());
         self.last_requested_x = self.cursor_x;
         self.snap_view_to_cursor(meta);
+    }
+
+    fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, _meta: &Metadata) {
+        if let Err(e) = self.clipboard.as_ref() {
+            eprintln!("Can't access clipboard: {e}");
+            return;
+        }
+
+        let (start, end) = selection_absolute_order(selection);
+        let content = if start.line == end.line {
+            // all content on the same line
+            let line = &self.code[start.line];
+            if line.is_empty() {
+                String::new()
+            } else if end.column == line.len() {
+                // user selected the logical newline (like vim '$')
+                let mut content = line[start.column..end.column].to_string();
+                content.push('\n');
+
+                content
+            } else {
+                // visual select is an inclusive range
+                line[start.column..=end.column].to_string()
+            }
+        } else {
+            let mut lines = Vec::with_capacity(end.line - start.line);
+            lines.push(&self.code[start.line][start.column..]);
+
+            for line in (start.line + 1)..end.line {
+                lines.push(self.code[line].as_str());
+            }
+
+            let end_line_range = if self.code[end.line].is_empty() {
+                0..0
+            } else if end.column == self.code[end.line].len() {
+                // user selected the logical newline (like vim '$')
+                0..end.column
+            } else {
+                // visual select is an inclusive range
+                0..end.column + 1
+            };
+
+            lines.push(&self.code[end.line][end_line_range]);
+            let mut joined_lines = lines.join("\n");
+
+            let end_line_len = self.code[end.line].len();
+            if end_line_len != 0 && end.column == end_line_len {
+                // user selected the logical newline (like vim '$')
+                joined_lines.push('\n');
+            }
+
+            joined_lines
+        };
+
+        // safe since we gated this at the start
+        let clipboard = self.clipboard.as_mut().unwrap();
+
+        if let Err(e) = clipboard.set_text(content) {
+            eprintln!("Failed to set clipboard text: {e}");
+        }
     }
 
     /// Applies the edit operation and returns the inverse *if* something was performed.
@@ -956,6 +1033,15 @@ impl Editor {
                 if key_event.modifiers.is_empty() {
                     self.toggle_selection();
                 }
+
+                AppCommand::None
+            }
+            KeyCode::Char('c') => {
+                if key_event.modifiers.contains(KeyModifiers::CONTROL) && let Some(selection) = self.active_selection.take() {
+                    self.copy_selection_to_clipboard(&selection, meta);
+                    self.cursor_x = self.cursor_x.min(self.max_cursor_x());
+                    self.last_requested_x = self.cursor_x;
+                } 
 
                 AppCommand::None
             }
