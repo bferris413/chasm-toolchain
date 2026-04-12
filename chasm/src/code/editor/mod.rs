@@ -513,10 +513,10 @@ impl Editor {
     }
 
     fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, _meta: &Metadata) {
-        if let Err(e) = self.clipboard.as_ref() {
-            eprintln!("Can't access clipboard: {e}");
+        let Ok(clipboard) = self.clipboard.as_mut() else {
+            eprintln!("Can't access clipboard: {}", self.clipboard.as_ref().err().unwrap());
             return;
-        }
+        };
 
         let (start, end) = selection_absolute_order(selection);
         let content = if start.line == end.line {
@@ -564,11 +564,8 @@ impl Editor {
             joined_lines
         };
 
-        // safe since we gated this at the start
-        let clipboard = self.clipboard.as_mut().unwrap();
-
         if let Err(e) = clipboard.set_text(content) {
-            eprintln!("Failed to set clipboard text: {e}");
+            eprintln!("Failed to set clipboard text during copy: {e}");
         }
     }
 
