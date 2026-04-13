@@ -62,7 +62,7 @@ impl Editor {
             format!("Error loading module {}: {}\n\nReload or something...", module.name, e)
         });
 
-        let code = code.lines().map(|line| line.to_string()).collect();
+        let code = raw_text_to_lines(code);
 
         Self {
             module,
@@ -512,9 +512,47 @@ impl Editor {
         self.snap_view_to_cursor(meta);
     }
 
+    fn paste_from_clipboard(&mut self, _meta: &Metadata) {
+        let Ok(clipboard) = self.clipboard.as_mut() else {
+            eprintln!("Can't access clipboard for paste: {}", self.clipboard.as_ref().err().unwrap());
+            return;
+        };
+        
+        let content = match clipboard.get_text() {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("Failed to get clipboard text for paste: {e}");
+                return;
+            }
+        };
+
+        if content.is_empty() {
+            return;
+        }
+
+        let editor_lines = raw_text_to_lines(content);
+        assert!(!editor_lines.is_empty());
+
+        let editor_content = Content::from(editor_lines);
+        let pseudo_selection = self.get_selection_from(&editor_content);
+        let (sel_start, sel_end) = selection_absolute_order(&pseudo_selection);
+
+        let insert_op = InsertVisualOp {
+            selection: pseudo_selection,
+            content: editor_content,
+            cursor_from: sel_start,
+            cursor_to: sel_end,
+        };
+
+        if let Some(inverse_op) = self.apply(insert_op.into(), _meta) {
+            self.undo_redo.push(inverse_op);
+        }
+
+    }
+
     fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, _meta: &Metadata) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
-            eprintln!("Can't access clipboard: {}", self.clipboard.as_ref().err().unwrap());
+            eprintln!("Can't access clipboard for copy: {}", self.clipboard.as_ref().err().unwrap());
             return;
         };
 
@@ -1029,6 +1067,10 @@ impl Editor {
             KeyCode::Char('v') => {
                 if key_event.modifiers.is_empty() {
                     self.toggle_selection();
+                } else if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                    if self.active_selection.is_none() {
+                        self.paste_from_clipboard(meta);
+                    }
                 }
 
                 AppCommand::None
@@ -1111,6 +1153,10 @@ impl Editor {
                     self.move_cursor_down(1, meta);
                     AppCommand::None
                 }
+                KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.paste_from_clipboard(meta);
+                    AppCommand::None
+                }
                 KeyCode::Char(c) => {
                     let insert_op = InsertSingleOp {
                         at: Position { line: self.cursor_y, column: self.cursor_x },
@@ -1185,6 +1231,44 @@ impl Editor {
             }
         } else {
             AppCommand::None
+        }
+    }
+    
+    fn get_selection_from(&self, editor_content: &Content) -> VisualSelection {
+        let cursor = Position { line: self.cursor_y, column: self.cursor_x };
+
+        match editor_content {
+            Content::StringOrChar(string_or_char) => {
+                match string_or_char {
+                    StringOrChar::String(s) => {
+                        let to = Position { column: (cursor.column + s.len()).saturating_sub(1), ..cursor };
+                        VisualSelection { anchor: cursor, cursor: to }
+                    }
+                    StringOrChar::Char(_) => {
+                        VisualSelection { anchor: cursor, cursor }
+                    }
+                }
+            }
+            Content::Lines(lines) => {
+                let mut new_lines_count = 1 + lines.new_lines.len(); // new lines + last line
+
+                if lines.last_line_split {
+                    new_lines_count += 1;
+                }
+
+                let end_line = cursor.line + new_lines_count;
+                let end_col = if lines.last_line_split {
+                    0
+                } else {
+                    // selection is inclusive
+                    match lines.last_line {
+                        StringOrChar::String(ref s) => s.len().saturating_sub(1),
+                        StringOrChar::Char(_) => 0,
+                    }
+                };
+
+                VisualSelection { anchor: cursor, cursor: Position { line: end_line, column: end_col } }
+            }
         }
     }
 
@@ -1375,6 +1459,18 @@ fn digits_in(n: u64) -> u32 {
     }
 }
 
+/// Converts a "normal" string (e.g. from a file or clipboard) into a collection of lines.
+/// 
+/// Carriage returns are stripped iff they're part of the newline (\r\n), and final newline is
+/// preserved if it exists (unlike str::lines()).
+fn raw_text_to_lines(text: String) -> Vec<String> {
+    text.split('\n')
+        .into_iter()
+        .map(|s| s.strip_suffix('\r').unwrap_or(s))
+        .map(String::from)
+        .collect()
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct VisualSelection {
     anchor: Position,
@@ -1423,6 +1519,30 @@ struct Lines {
 enum Content {
     StringOrChar(StringOrChar),
     Lines(Lines),
+}
+impl From<Vec<String>> for Content {
+    fn from(mut content: Vec<String>) -> Self {
+        // we control this
+        assert!(!content.is_empty(), "Content must be non-empty");
+
+        if content.len() == 1 {
+            return Self::StringOrChar(StringOrChar::String(content.pop().unwrap()));
+        }
+
+        // else we know we have at least two lines
+
+        let first_line = content.remove(0);
+        let last_line = content.pop().unwrap();
+
+        let lines = Lines {
+            cur_line: first_line.into(),
+            new_lines: content,
+            last_line: last_line.into(),
+            last_line_split: false,
+        };
+
+        Self::Lines(lines)
+    }
 }
 impl From<String> for Content {
     fn from(s: String) -> Self {
