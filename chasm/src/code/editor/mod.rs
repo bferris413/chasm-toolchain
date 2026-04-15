@@ -2,6 +2,8 @@ mod ops;
 mod undo_redo;
 
 use std::fmt;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::{iter::Peekable, ops::Range};
 
 use arboard::Clipboard;
@@ -619,6 +621,32 @@ impl Editor {
         }
     }
 
+    fn save_buffer(&self, _meta: &Metadata) {
+        let file = match File::create(&self.module.path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Failed to save file {}: {}", self.module.path.display(), e);
+                return;
+            }
+        };
+
+        let mut writer = BufWriter::new(file);
+
+        let nlines = self.code.len();
+        for (i, line) in self.code.iter().enumerate() {
+            if let Err(e) = writer.write_all(line.as_bytes()) {
+                eprintln!("Failed to write to file {}: {}", self.module.path.display(), e);
+                return;
+            }
+
+            if i != nlines - 1 {
+                if let Err(e) = writer.write_all(b"\n") {
+                    eprintln!("Failed to write to file {}: {}", self.module.path.display(), e);
+                    return;
+                }
+            }
+        }
+    }
     /// Applies the edit operation and returns the inverse *if* something was performed.
     fn apply(&mut self, op: EditOp, meta: &Metadata) -> Option<EditOp> {
         match op {
@@ -919,7 +947,12 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('s') => {
-                if let Some(selection) = self.active_selection.take() {
+                if key_event.modifiers == KeyModifiers::CONTROL {
+                    // save
+                   self.save_buffer(meta); 
+                } else if let Some(selection) = self.active_selection.take() {
+                    // visual delete and enter insert mode
+
                     let visual_delete = DeleteVisualOp {
                         selection,
                         deleted: None,
@@ -928,7 +961,10 @@ impl Editor {
                     if let Some(inverse_op) = self.apply(visual_delete.into(), meta) {
                         self.undo_redo.push(inverse_op);
                     }
+
+                    self.mode = EditorMode::Insert;
                 } else {
+                    // delete the character under the cursor and enter insert mode
                     let is_empty = self.code[self.cursor_y].is_empty();
 
                     if !is_empty {
@@ -943,9 +979,10 @@ impl Editor {
                             self.undo_redo.push(undo_op);
                         }
                     }
+
+                    self.mode = EditorMode::Insert;
                 }
 
-                self.mode = EditorMode::Insert;
                 AppCommand::None
             }
             KeyCode::Char('O') => {

@@ -64,6 +64,7 @@ fn is_chasm_assembly_file(path: &PathBuf) -> bool {
     path.extension().and_then(|s| s.to_str()) == Some("cas")
 }
 
+/// A tuple of a module's file path and its name (derived from the file name)
 #[derive(Debug, Clone)]
 pub struct ModulePath {
     pub path: PathBuf,
