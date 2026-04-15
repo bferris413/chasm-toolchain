@@ -91,8 +91,11 @@ impl Editor {
     }
 
     fn max_cursor_x(&self) -> usize {
-        let clamp_at = 1;
-        self.code[self.cursor_y].len().saturating_sub(clamp_at)
+        match self.mode {
+            // we can be off the end of visible text in insert mode, but not in normal mode
+            EditorMode::Insert => self.code[self.cursor_y].len(),
+            EditorMode::Normal => self.code[self.cursor_y].len().saturating_sub(1),
+        }
     }
 
     fn move_cursor_up(&mut self, move_size: usize, meta: &Metadata) {
