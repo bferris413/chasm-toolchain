@@ -647,6 +647,7 @@ impl Editor {
             }
         }
     }
+
     /// Applies the edit operation and returns the inverse *if* something was performed.
     fn apply(&mut self, op: EditOp, meta: &Metadata) -> Option<EditOp> {
         match op {

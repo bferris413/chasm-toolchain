@@ -7,7 +7,7 @@ use std::{
 use crate::{CodeArgs, code::editor::Editor, project::{ChasmProject, ModulePath}};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal,
     Frame,
@@ -134,7 +134,7 @@ impl App {
                 self.status.handle_event(&e, &meta);
 
                 match key_event.code {
-                    KeyCode::Char('q') => {
+                    KeyCode::Char('q') if key_event.modifiers == KeyModifiers::CONTROL => {
                         if !self.exit_modal_active {
                             let modal = YesNoModal::new("Exit", "Are you sure you want to exit?");
                             self.view_stack.push(Box::new(modal));
