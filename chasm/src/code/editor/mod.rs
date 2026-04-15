@@ -1,6 +1,7 @@
 mod ops;
 mod undo_redo;
 
+use std::fmt;
 use std::{iter::Peekable, ops::Range};
 
 use arboard::Clipboard;
@@ -552,7 +553,7 @@ impl Editor {
 
     fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, _meta: &Metadata) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
-            eprintln!("Can't access clipboard for copy: {}", self.clipboard.as_ref().err().unwrap());
+            eprintln!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
             return;
         };
 
@@ -603,7 +604,18 @@ impl Editor {
         };
 
         if let Err(e) = clipboard.set_text(content) {
-            eprintln!("Failed to set clipboard text during copy: {e}");
+            eprintln!("Failed to set clipboard text during cut/copy: {e}");
+        }
+    }
+
+    fn set_clipboard_text(&mut self, text: String, _meta: &Metadata) {
+        let Ok(clipboard) = self.clipboard.as_mut() else {
+            eprintln!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
+            return;
+        };
+
+        if let Err(e) = clipboard.set_text(text) {
+            eprintln!("Failed to set clipboard text during cut/copy: {e}");
         }
     }
 
@@ -762,6 +774,9 @@ impl Editor {
             }
             EditOp::DeleteVisual(delete_visual_op) => {
                 let inverse_op = self.visual_delete(delete_visual_op, meta);
+
+                // Currently depend on this being true for 'cut' operation (delete + copy to clipboard)
+                assert!(matches!(inverse_op, Some(EditOp::InsertVisual(_)) | Some(EditOp::InsertSingle(_)) | Some(EditOp::Split(_)) | None));
                 inverse_op
             },
         }
@@ -769,7 +784,7 @@ impl Editor {
 
     fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
-            if kev.modifiers.contains(KeyModifiers::CONTROL) {
+            if kev.modifiers == KeyModifiers::CONTROL {
                 (meta.view_area.0.height as usize).saturating_sub(1)
             } else {
                 1
@@ -797,7 +812,7 @@ impl Editor {
                 }
                 AppCommand::None
             }
-            KeyCode::Char('g') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('g') if key_event.modifiers == KeyModifiers::CONTROL => {
                 let target_line = 0;
                 if target_line != self.cursor_y {
                     let move_len = self.cursor_y.saturating_sub(target_line);
@@ -819,8 +834,19 @@ impl Editor {
                         selection,
                         deleted: None,
                     };
-                    
+
                     if let Some(inverse_op) = self.apply(visual_delete_op.into(), meta) {
+                        if key_event.modifiers == KeyModifiers::CONTROL {
+                            let deleted_content = match &inverse_op {
+                                EditOp::InsertVisual(insert_visual_op) => insert_visual_op.content.to_string(),
+                                EditOp::InsertSingle(insert_single_op) => insert_single_op.content.to_string(),
+                                EditOp::Split(_) => '\n'.to_string(),
+                                other => panic!("Unexpected inverse op for visual delete: {other:#?}"),
+                            };
+
+                            self.set_clipboard_text(deleted_content, meta);
+                        }
+
                         self.undo_redo.push(inverse_op);
                     }
                 } else {
@@ -839,7 +865,7 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('d') => {
-                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                if key_event.modifiers == KeyModifiers::CONTROL {
                     let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
                     self.move_cursor_down(move_size, meta);
                 } else if let Some(selection) = self.active_selection.take() {
@@ -988,7 +1014,7 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('u') => {
-                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                if key_event.modifiers == KeyModifiers::CONTROL {
                     let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
                     self.move_cursor_up(move_size, meta);
                     AppCommand::None
@@ -1001,7 +1027,7 @@ impl Editor {
 
             }
             KeyCode::Char('r') => {
-                if ! key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                if key_event.modifiers != KeyModifiers::CONTROL {
                     return AppCommand::None;
                 }
 
@@ -1067,7 +1093,7 @@ impl Editor {
             KeyCode::Char('v') => {
                 if key_event.modifiers.is_empty() {
                     self.toggle_selection();
-                } else if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                } else if key_event.modifiers == KeyModifiers::CONTROL {
                     if self.active_selection.is_none() {
                         self.paste_from_clipboard(meta);
                     }
@@ -1076,7 +1102,7 @@ impl Editor {
                 AppCommand::None
             }
             KeyCode::Char('c') => {
-                if key_event.modifiers.contains(KeyModifiers::CONTROL) && let Some(selection) = self.active_selection.take() {
+                if key_event.modifiers == KeyModifiers::CONTROL && let Some(selection) = self.active_selection.take() {
                     self.copy_selection_to_clipboard(&selection, meta);
                     self.cursor_x = self.cursor_x.min(self.max_cursor_x());
                     self.last_requested_x = self.cursor_x;
@@ -1118,7 +1144,7 @@ impl Editor {
                     self.last_requested_x = self.cursor_x;
                     AppCommand::None
                 }
-                KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('h') | KeyCode::Char('l') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('h') | KeyCode::Char('l') if key_event.modifiers == KeyModifiers::CONTROL => {
                     match key_event.code {
                         KeyCode::Char('j') => {
                             self.move_cursor_down(1, meta);
@@ -1153,7 +1179,7 @@ impl Editor {
                     self.move_cursor_down(1, meta);
                     AppCommand::None
                 }
-                KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char('v') if key_event.modifiers == KeyModifiers::CONTROL => {
                     self.paste_from_clipboard(meta);
                     AppCommand::None
                 }
@@ -1506,6 +1532,14 @@ impl From<char> for StringOrChar {
         StringOrChar::Char(c)
     }
 }
+impl fmt::Display for StringOrChar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StringOrChar::String(s) => write!(f, "{s}"),
+            StringOrChar::Char(c) => write!(f, "{c}"),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Lines {
@@ -1557,5 +1591,25 @@ impl From<char> for Content {
 impl From<Lines> for Content {
     fn from(lines_insert: Lines) -> Self {
         Self::Lines(lines_insert)
+    }
+}
+impl fmt::Display for Content {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Content::StringOrChar(StringOrChar::String(s)) => write!(f, "{s}"),
+            Content::StringOrChar(StringOrChar::Char(c)) => write!(f, "{c}"),
+            Content::Lines(lines) => {
+                writeln!(f, "{}", lines.cur_line)?;
+                for new_line in &lines.new_lines {
+                    writeln!(f, "{new_line}")?;
+                }
+
+                if lines.last_line_split {
+                    writeln!(f, "{}", lines.last_line)
+                } else {
+                    write!(f, "{}", lines.last_line)
+                }
+            }
+        }
     }
 }
