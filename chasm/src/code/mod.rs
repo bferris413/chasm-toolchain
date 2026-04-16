@@ -4,7 +4,7 @@ use std::{
     fmt::{Debug, Write}, ops::Not, sync::{Arc, RwLock}
 };
 
-use crate::{CodeArgs, code::editor::Editor, project::{ChasmProject, ModulePath}};
+use crate::{CodeArgs, FileOrProject, code::editor::{Editor, ModuleOrFile}, project::{ChasmProject, ModulePath}};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -40,8 +40,7 @@ impl WidgetRef for &dyn ChasmWidget {
 }
 
 pub fn code(args: CodeArgs) -> Result<()> {
-    let project = ChasmProject::load(args.project_dir.0)?;
-    ratatui::run(|term| App::new(project).run(term))
+    ratatui::run(|term| App::new(args.file_or_project).run(term))
 }
 
 #[derive(Debug)]
@@ -61,7 +60,6 @@ struct ViewArea(Rect);
 
 #[derive(Debug)]
 pub struct App {
-    project: Arc<RwLock<ChasmProject>>,
     status: StatusBar,
     view_stack: Vec<Box<dyn ChasmWidget>>,
 
@@ -70,20 +68,12 @@ pub struct App {
     metadata: Metadata,
 }
 impl App {
-    pub fn new(project: ChasmProject) -> Self {
-        let project = Arc::new(RwLock::new(project));
-        let mut select_list_state = ListState::default();
-        select_list_state.select(Some(0));
+    pub(crate) fn new(file_or_project: FileOrProject) -> Self {
+        let first_widget = select_first_widget(file_or_project);
 
-        let args = ModuleSelectViewArgs {
-            project: project.clone(),
-            select_list_state,
-            module_paths: project.read().unwrap().module_names(),
-        };
         Self {
-            project: project.clone(),
             status: StatusBar::new(),
-            view_stack: vec![Box::new(ModuleSelectView::new(args))],
+            view_stack: vec![first_widget],
 
             should_exit: false,
             exit_modal_active: false,
@@ -172,6 +162,27 @@ impl App {
         };
 
         Ok(())
+    }
+}
+
+fn select_first_widget(file_or_project: FileOrProject) -> Box<dyn ChasmWidget> {
+    match file_or_project {
+        FileOrProject::File(path) => {
+            let mod_or_file = ModuleOrFile::File(path);
+            let editor = Editor::new(mod_or_file);
+            Box::new(editor) as Box<dyn ChasmWidget>
+        }
+        FileOrProject::Project(project) => {
+            let mut select_list_state = ListState::default();
+            select_list_state.select(Some(0));
+            let module_paths = project.module_names();
+            let args = ModuleSelectViewArgs {
+                project: Arc::new(RwLock::new(project)),
+                select_list_state,
+                module_paths,
+            };
+            Box::new(ModuleSelectView::new(args)) as Box<dyn ChasmWidget>
+        }
     }
 }
 
@@ -292,7 +303,8 @@ impl ChasmWidget for ModuleSelectView {
                     } else {
                         let selected = selected - 1; // offset to account for "Create new"
                         let module_path = self.module_paths[selected].clone();
-                        let editor = Editor::new(module_path);
+                        let mod_or_file = ModuleOrFile::Module(module_path);
+                        let editor = Editor::new(mod_or_file);
                         return AppCommand::PushView(Box::new(editor));
                     }
 

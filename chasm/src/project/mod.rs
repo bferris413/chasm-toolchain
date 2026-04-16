@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 use anyhow::{Result, bail};
 
@@ -6,7 +6,7 @@ const LOAD_ERROR: &str = "Error loading project";
 const CONFIG_FILE_NAME: &'static str = "chasm.toml";
 
 /// The shape of a Chasm project on disk.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ChasmProject {
     root: PathBuf,
     config: ProjectConfig,
@@ -59,6 +59,11 @@ impl ChasmProject {
         modules
     }
 }    
+impl fmt::Display for ChasmProject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "root: {}, config: {}", self.root.display(), self.config)
+    }
+}
 
 fn is_chasm_assembly_file(path: &PathBuf) -> bool {
     path.extension().and_then(|s| s.to_str()) == Some("cas")
@@ -71,7 +76,12 @@ pub struct ModulePath {
     pub name: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ProjectConfig {
     // TODO
+}
+impl fmt::Display for ProjectConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<empty project config>")
+    }
 }

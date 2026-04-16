@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 
+use crate::project::ChasmProject;
+
 pub mod assemble;
 #[cfg(feature = "code")]
 pub mod code;
@@ -32,24 +34,39 @@ pub struct LinkArgs {
 #[derive(Args, Debug)]
 pub struct CodeArgs {
     /// The directory of the Chasm project
-    #[arg(default_value_t = ProjectDir(PathBuf::from(".")), value_parser = parse_project_dir)]
-    project_dir: ProjectDir,
+    #[arg(value_parser = parse_file_or_project)]
+    file_or_project: FileOrProject,
 }
 
 #[derive(Clone, Debug)]
-struct ProjectDir(PathBuf);
-impl std::fmt::Display for ProjectDir {
+enum FileOrProject {
+    // path to a plain file
+    File(PathBuf),
+    // path to a project directory (must contain chasm.toml and src/)
+    Project(ChasmProject),
+}
+impl std::fmt::Display for FileOrProject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.display().fmt(f)
+        match self {
+            FileOrProject::File(path) => path.display().fmt(f),
+            FileOrProject::Project(project) => write!(f, "{project}"),
+        }
     }
 }
 
-fn parse_project_dir(v: &str) -> Result<ProjectDir, String> {
+fn parse_file_or_project(v: &str) -> Result<FileOrProject, String> {
     let path = Path::new(v);
-    if !path.is_dir() {
-        return Err(format!("{} is not a directory", v));
+    let fullpath = path.canonicalize().map_err(|e| format!("{e}"))?;
+
+    if fullpath.is_dir() {
+        let project = ChasmProject::load(fullpath)
+            .map_err(|e| format!("{e}"))?;
+
+        Ok(FileOrProject::Project(project))
+    } else if fullpath.is_file() {
+        Ok(FileOrProject::File(fullpath))
+    } else {
+        Err(format!("{} is not a valid file or project path", v))
     }
 
-    let fullpath = path.canonicalize().map_err(|e| format!("{e}"))?;
-    Ok(ProjectDir(fullpath))
 }

@@ -2,8 +2,9 @@ mod ops;
 mod undo_redo;
 
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::{iter::Peekable, ops::Range};
 
 use arboard::Clipboard;
@@ -26,8 +27,22 @@ enum EditorMode {
     Insert,
 }
 
+#[derive(Debug)]
+pub enum ModuleOrFile {
+    Module(ModulePath),
+    File(PathBuf),
+}
+impl ModuleOrFile {
+    pub fn path(&self) -> &PathBuf {
+        match self {
+            ModuleOrFile::Module(module) => &module.path,
+            ModuleOrFile::File(path) => path,
+        }
+    }
+}
+
 pub (super) struct Editor {
-    module: ModulePath,
+    mod_or_file: ModuleOrFile,
     code: Vec<String>,
     scroll_y: usize,
     mode: EditorMode,
@@ -46,7 +61,7 @@ pub (super) struct Editor {
 impl std::fmt::Debug for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Editor")
-            .field("module", &self.module)
+            .field("mod_or_file", &self.mod_or_file)
             .field("code", &"<code hidden>")
             .field("scroll_y", &self.scroll_y)
             .field("mode", &self.mode)
@@ -59,16 +74,20 @@ impl std::fmt::Debug for Editor {
     }
 }
 impl Editor {
-    pub (super) fn new(module: ModulePath) -> Self {
+    pub (super) fn new(mod_or_file: ModuleOrFile) -> Self {
+        let path = match &mod_or_file {
+            ModuleOrFile::Module(module) => &module.path,
+            ModuleOrFile::File(path) => path,
+        };
 
-        let code = std::fs::read_to_string(&module.path).unwrap_or_else(|e| {
-            format!("Error loading module {}: {}\n\nReload or something...", module.name, e)
+        let code = fs::read_to_string(&path).unwrap_or_else(|e| {
+            format!("Error loading {}: {}\n\nReload or something...", path.display(), e)
         });
 
         let code = raw_text_to_lines(code);
 
         Self {
-            module,
+            mod_or_file,
             code,
             scroll_y: 0,
             mode: EditorMode::Normal,
@@ -625,10 +644,11 @@ impl Editor {
     }
 
     fn save_buffer(&self, _meta: &Metadata) {
-        let file = match File::create(&self.module.path) {
+        let path = self.mod_or_file.path();
+        let file = match File::create(&path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("Failed to save file {}: {}", self.module.path.display(), e);
+                eprintln!("Failed to save file {}: {}", path.display(), e);
                 return;
             }
         };
@@ -638,13 +658,13 @@ impl Editor {
         let nlines = self.code.len();
         for (i, line) in self.code.iter().enumerate() {
             if let Err(e) = writer.write_all(line.as_bytes()) {
-                eprintln!("Failed to write to file {}: {}", self.module.path.display(), e);
+                eprintln!("Failed to write to file {}: {}", path.display(), e);
                 return;
             }
 
             if i != nlines - 1 {
                 if let Err(e) = writer.write_all(b"\n") {
-                    eprintln!("Failed to write to file {}: {}", self.module.path.display(), e);
+                    eprintln!("Failed to write to file {}: {}", path.display(), e);
                     return;
                 }
             }
