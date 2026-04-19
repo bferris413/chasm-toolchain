@@ -1,12 +1,13 @@
 mod editor;
 
 use std::{
-    fmt::{Debug, Write}, ops::Not, sync::{Arc, RwLock}
+    collections::VecDeque, fmt::{Debug, Write}, ops::Not, sync::{Arc, RwLock}
 };
 
 use crate::{CodeArgs, FileOrProject, code::editor::{Editor, ModuleOrFile}, project::{ChasmProject, ModulePath}};
 
 use anyhow::Result;
+use clap::Command;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal,
@@ -19,7 +20,7 @@ use ratatui::{
 };
 
 trait ChasmWidget: Debug {
-    fn handle_event(&mut self, event: &Event, ctx: &WidgetContext);
+    fn handle_event(&mut self, event: &Event, ctx: &mut WidgetContext);
     fn render(&self, area: Rect, buf: &mut Buffer);
 }
 impl Widget for &dyn ChasmWidget {
@@ -52,20 +53,31 @@ impl AppContext {
 }
 
 struct CommandQueue {
-
+    q: VecDeque<AppCommand>,
 }
 impl CommandQueue {
     fn new() -> Self {
-        Self {}    
+        Self {
+            q: VecDeque::new(),
+        }
     }
     
     fn tx<'a>(&'a mut self) -> CommandQueueTx<'a> {
         CommandQueueTx { cq: self }
     }
+
+    fn drain(&mut self) -> impl Iterator<Item = AppCommand> + '_ {
+        self.q.drain(..)
+    }
 }
 
 struct CommandQueueTx<'a> {
     cq: &'a mut CommandQueue,
+}
+impl CommandQueueTx<'_> {
+    fn push(&mut self, cmd: AppCommand) {
+        self.cq.q.push_back(cmd);
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -81,7 +93,6 @@ pub fn code(args: CodeArgs) -> Result<()> {
 #[derive(Debug)]
 enum AppCommand {
     None,
-    Quit,
     PopView,
     PushView(Box<dyn ChasmWidget>),
     Yes,
@@ -157,10 +168,10 @@ impl App {
     }
 
     fn handle_events(&mut self, app_ctx: &mut AppContext) -> Result<()> {
-        let widget_ctx = app_ctx.widget_context();
+        let mut widget_ctx = app_ctx.widget_context();
         match event::read()? {
             e @ Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.status.handle_event(&e, &widget_ctx);
+                self.status.handle_event(&e, &mut widget_ctx);
 
                 match key_event.code {
                     KeyCode::Char('q') if key_event.modifiers == KeyModifiers::CONTROL => {
@@ -171,33 +182,35 @@ impl App {
                         }
                     }
                     _other => {
-                        self.view_stack.last_mut().unwrap().handle_event(&e, &widget_ctx);
+                        self.view_stack.last_mut().unwrap().handle_event(&e, &mut widget_ctx);
                     }
                 }
 
-                // match cmd {
-                //     AppCommand::Yes => {
-                //         if self.exit_modal_active {
-                //             self.view_stack.pop();
-                //             self.exit_modal_active = false;
-                //             self.should_exit = true;
-                //         }
-                //     }
-                //     AppCommand::No => {
-                //         if self.exit_modal_active {
-                //             self.view_stack.pop();
-                //             self.exit_modal_active = false;
-                //         }
-                //     }
-                //     AppCommand::None => {}
-                //     AppCommand::PushView(widget) => self.view_stack.push(widget),
-                //     other => { 
-                //         panic!("Unexpected command from exit modal: {other:?}");
-                //     }
-                // }
+                for cmd in app_ctx.command_queue.drain() {
+                    match cmd {
+                        AppCommand::Yes => {
+                            if self.exit_modal_active {
+                                self.view_stack.pop();
+                                self.exit_modal_active = false;
+                                self.should_exit = true;
+                            }
+                        }
+                        AppCommand::No => {
+                            if self.exit_modal_active {
+                                self.view_stack.pop();
+                                self.exit_modal_active = false;
+                            }
+                        }
+                        AppCommand::None => {}
+                        AppCommand::PushView(widget) => self.view_stack.push(widget),
+                        other => { 
+                            panic!("Unexpected command from exit modal: {other:?}");
+                        }
+                    }
+                }
             }
             e => {
-                self.status.handle_event(&e, &widget_ctx);
+                self.status.handle_event(&e, &mut widget_ctx);
             }
         };
 
@@ -238,7 +251,7 @@ impl StatusBar {
      }
 }
 impl ChasmWidget for StatusBar {
-    fn handle_event(&mut self, event: &Event, _ctx: &WidgetContext) {
+    fn handle_event(&mut self, event: &Event, _ctx: &mut WidgetContext) {
         match event {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                 self.event_text.clear();
@@ -324,7 +337,7 @@ impl ModuleSelectView {
 }
 
 impl ChasmWidget for ModuleSelectView {
-    fn handle_event(&mut self, event: &Event, _ctx: &WidgetContext) {
+    fn handle_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -343,7 +356,7 @@ impl ChasmWidget for ModuleSelectView {
                         let module_path = self.module_paths[selected].clone();
                         let mod_or_file = ModuleOrFile::Module(module_path);
                         let editor = Editor::new(mod_or_file);
-                        // return AppCommand::PushView(Box::new(editor));
+                        ctx.command_queue_tx.push(AppCommand::PushView(Box::new(editor)));
                     }
 
                 }
@@ -387,7 +400,7 @@ impl YesNoModal {
     }
 }
 impl ChasmWidget for YesNoModal {
-    fn handle_event(&mut self, event: &Event, _ctx: &WidgetContext) {
+    fn handle_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
                 KeyCode::Char('h') | KeyCode::Left => {
@@ -400,14 +413,14 @@ impl ChasmWidget for YesNoModal {
                 }
                 KeyCode::Char('Y') => {
                     if matches!(self.selection, ModalSelection::Yes) {
-                        // AppCommand::Yes
+                        ctx.command_queue_tx.push(AppCommand::Yes);
                     } else {
                         self.selection = ModalSelection::Yes;
                     }
                 }
                 KeyCode::Char('N') => {
                     if matches!(self.selection, ModalSelection::No) {
-                        // AppCommand::No
+                        ctx.command_queue_tx.push(AppCommand::No);
                     } else {
                         self.selection = ModalSelection::No;
                     }
@@ -417,13 +430,13 @@ impl ChasmWidget for YesNoModal {
                     self.selection = !self.selection;
                 }
                 KeyCode::Enter => {
-                    // match self.selection {
-                    //     ModalSelection::Yes => AppCommand::Yes,
-                    //     ModalSelection::No => AppCommand::No,
-                    // }
+                    match self.selection {
+                        ModalSelection::Yes => ctx.command_queue_tx.push(AppCommand::Yes),
+                        ModalSelection::No => ctx.command_queue_tx.push(AppCommand::No),
+                    }
                 }
                 KeyCode::Esc => {
-                    // AppCommand::No
+                    ctx.command_queue_tx.push(AppCommand::No);
                 }
                 _other => {
                 }

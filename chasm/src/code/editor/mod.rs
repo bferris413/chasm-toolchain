@@ -1307,7 +1307,7 @@ impl Editor {
 }
 impl ChasmWidget for Editor {
     
-    fn handle_event(&mut self, event: &Event, ctx: &WidgetContext) {
+    fn handle_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
         match self.mode {
             EditorMode::Normal => self.handle_normal_mode_event(event, ctx),
             EditorMode::Insert => self.handle_insert_mode_event(event, ctx),
