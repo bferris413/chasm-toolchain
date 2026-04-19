@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::{iter::Peekable, ops::Range};
 
 use arboard::Clipboard;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -16,7 +16,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
 use crate::code::editor::ops::DeleteXOp;
-use crate::code::{AppCommand, ChasmWidget, Metadata};
+use crate::code::{WidgetContext, ChasmWidget, Metadata};
 use crate::project::ModulePath;
 use ops::{DeleteBackOp, DeleteForwardOp, DeleteVisualOp, EditOp, InsertLineOp, InsertOp, InsertSingleOp, InsertVisualOp, SplitOp};
 use undo_redo::UndoRedoStack;
@@ -262,7 +262,7 @@ impl Editor {
     }
 
     // TODO: refactor, my mental model for what this _should_ look like isn't clear yet
-    fn visual_delete(&mut self, op: DeleteVisualOp, meta: &Metadata) -> Option<EditOp> {
+    fn visual_delete(&mut self, op: DeleteVisualOp, ctx: &WidgetContext) -> Option<EditOp> {
         if op.selection.is_empty() {
             self.delete_forward()
         } else {
@@ -366,7 +366,7 @@ impl Editor {
 
             let target_y = start.line;
             let y_distance = self.cursor_y.saturating_sub(target_y);
-            self.move_cursor_up(y_distance, meta);
+            self.move_cursor_up(y_distance, &ctx.metadata);
 
             let target_x = start.column;
             if self.cursor_x > target_x {
@@ -537,7 +537,7 @@ impl Editor {
         self.snap_view_to_cursor(meta);
     }
 
-    fn paste_from_clipboard(&mut self, _meta: &Metadata) {
+    fn paste_from_clipboard(&mut self, ctx: &WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
             eprintln!("Can't access clipboard for paste: {}", self.clipboard.as_ref().err().unwrap());
             return;
@@ -569,13 +569,13 @@ impl Editor {
             cursor_to: sel_end,
         };
 
-        if let Some(inverse_op) = self.apply(insert_op.into(), _meta) {
+        if let Some(inverse_op) = self.apply(insert_op.into(), ctx) {
             self.undo_redo.push(inverse_op);
         }
 
     }
 
-    fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, _meta: &Metadata) {
+    fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, ctx: &WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
             eprintln!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
             return;
@@ -632,7 +632,7 @@ impl Editor {
         }
     }
 
-    fn set_clipboard_text(&mut self, text: String, _meta: &Metadata) {
+    fn set_clipboard_text(&mut self, text: String, ctx: &WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
             eprintln!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
             return;
@@ -643,7 +643,7 @@ impl Editor {
         }
     }
 
-    fn save_buffer(&self, _meta: &Metadata) {
+    fn save_buffer(&self, ctx: &WidgetContext) {
         let path = self.mod_or_file.path();
         let file = match File::create(&path) {
             Ok(f) => f,
@@ -672,7 +672,7 @@ impl Editor {
     }
 
     /// Applies the edit operation and returns the inverse *if* something was performed.
-    fn apply(&mut self, op: EditOp, meta: &Metadata) -> Option<EditOp> {
+    fn apply(&mut self, op: EditOp, ctx: &WidgetContext) -> Option<EditOp> {
         match op {
             EditOp::Insert(insert_op) => {
                 let inverse_op = insert_op.clone().invert();
@@ -688,7 +688,7 @@ impl Editor {
                     }
                 }
 
-                self.move_to(insert_op.cursor_to, meta);
+                self.move_to(insert_op.cursor_to, &ctx.metadata);
                 Some(inverse_op.into())
             }
             EditOp::Delete(delete_op) => {
@@ -706,7 +706,7 @@ impl Editor {
                     }
                 }
 
-                self.move_to(delete_op.cursor_to, meta);
+                self.move_to(delete_op.cursor_to, &ctx.metadata);
                 Some(inverse_op.into())
 
             }
@@ -719,7 +719,7 @@ impl Editor {
                 let c = insert_single_op.content;
                 current_line.insert(col, c);
 
-                self.move_to(insert_single_op.cursor_to, meta);
+                self.move_to(insert_single_op.cursor_to, &ctx.metadata);
                 Some(inverse_op.into())
             }
             EditOp::InsertVisual(insert_visual_op) => {
@@ -777,28 +777,28 @@ impl Editor {
                     }
                 }
                 
-                self.move_to(insert_visual_op.cursor_to, meta);
+                self.move_to(insert_visual_op.cursor_to, &ctx.metadata);
                 Some(inverse_op.into())
             }
             EditOp::InsertLine(insert_line_op) => {
                 let inverse_op = insert_line_op.clone().invert();
 
                 self.code.insert(insert_line_op.y_pos, insert_line_op.content);
-                self.move_to(insert_line_op.cursor_to, meta);
+                self.move_to(insert_line_op.cursor_to, &ctx.metadata);
                 Some(inverse_op.into())
             }
             EditOp::DeleteLine(delete_line_op) => {
                 let inverse_op = delete_line_op.clone().invert();
 
                 self.code.remove(delete_line_op.y_pos);
-                self.move_to(delete_line_op.cursor_to, meta);
+                self.move_to(delete_line_op.cursor_to, &ctx.metadata);
                 Some(inverse_op.into())
             }
             EditOp::Split(split_op) => {
                 let line = &mut self.code[split_op.at.line];
                 let new_line = line.split_off(split_op.at.column);
                 self.code.insert(split_op.at.line + 1, new_line);
-                self.move_to(split_op.cursor_to, meta);
+                self.move_to(split_op.cursor_to, &ctx.metadata);
 
                 let inverse = split_op.invert();
                 Some(inverse.into())
@@ -807,7 +807,7 @@ impl Editor {
                 let current_line = self.code.remove(join_op.at.line + 1);
                 let line = &mut self.code[join_op.at.line];
                 line.push_str(&current_line);
-                self.move_to(join_op.cursor_to, meta);
+                self.move_to(join_op.cursor_to, &ctx.metadata);
 
                 let inverse = join_op.invert();
                 Some(inverse.into())
@@ -825,7 +825,7 @@ impl Editor {
                 inverse_op
             }
             EditOp::DeleteVisual(delete_visual_op) => {
-                let inverse_op = self.visual_delete(delete_visual_op, meta);
+                let inverse_op = self.visual_delete(delete_visual_op, ctx);
 
                 // Currently depend on this being true for 'cut' operation (delete + copy to clipboard)
                 assert!(matches!(inverse_op, Some(EditOp::InsertVisual(_)) | Some(EditOp::InsertSingle(_)) | Some(EditOp::Split(_)) | None));
@@ -834,7 +834,7 @@ impl Editor {
         }
     }
 
-    fn handle_normal_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
+    fn handle_normal_mode_event(&mut self, event: &Event, ctx: &WidgetContext) {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers == KeyModifiers::CONTROL {
                 (meta.view_area.0.height as usize).saturating_sub(1)
@@ -844,41 +844,37 @@ impl Editor {
         }
 
         if ! event.is_key_press() {
-            return AppCommand::None;
+            return;
         }
 
         let Event::Key(key_event) = event else { unreachable!() };
 
-        let app_cmd = match key_event.code {
+        match key_event.code {
             KeyCode::Esc => {
                 if self.active_selection.is_some() {
                     self.active_selection = None;
                 }
-                AppCommand::None
             }
             KeyCode::Char('G') => {
                 let target_line = self.code.len().saturating_sub(1);
                 if target_line != self.cursor_y {
                     let move_len = target_line.saturating_sub(self.cursor_y);
-                    self.move_cursor_down(move_len, meta);
+                    self.move_cursor_down(move_len, &ctx.metadata);
                 }
-                AppCommand::None
             }
             KeyCode::Char('g') if key_event.modifiers == KeyModifiers::CONTROL => {
                 let target_line = 0;
                 if target_line != self.cursor_y {
                     let move_len = self.cursor_y.saturating_sub(target_line);
-                    self.move_cursor_up(move_len, meta);
+                    self.move_cursor_up(move_len, &ctx.metadata);
                 }
 
-                AppCommand::None
             }
             KeyCode::Char('I') => {
                 self.cursor_x = 0;
                 self.skip_x_whitespace_forward();
                 self.mode = EditorMode::Insert;
                 self.active_selection = None;
-                AppCommand::None
             }
             KeyCode::Char('x') => {
                 if let Some(selection) = self.active_selection.take() {
@@ -887,7 +883,7 @@ impl Editor {
                         deleted: None,
                     };
 
-                    if let Some(inverse_op) = self.apply(visual_delete_op.into(), meta) {
+                    if let Some(inverse_op) = self.apply(visual_delete_op.into(), ctx) {
                         if key_event.modifiers == KeyModifiers::CONTROL {
                             let deleted_content = match &inverse_op {
                                 EditOp::InsertVisual(insert_visual_op) => insert_visual_op.content.to_string(),
@@ -896,7 +892,7 @@ impl Editor {
                                 other => panic!("Unexpected inverse op for visual delete: {other:#?}"),
                             };
 
-                            self.set_clipboard_text(deleted_content, meta);
+                            self.set_clipboard_text(deleted_content, ctx);
                         }
 
                         self.undo_redo.push(inverse_op);
@@ -909,29 +905,25 @@ impl Editor {
                         cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
                     };
 
-                    if let Some(inverse_op) = self.apply(edit.into(), meta) {
+                    if let Some(inverse_op) = self.apply(edit.into(), ctx) {
                         self.undo_redo.push(inverse_op);
                     }
                 }
-
-                AppCommand::None
             }
             KeyCode::Char('d') => {
                 if key_event.modifiers == KeyModifiers::CONTROL {
-                    let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
-                    self.move_cursor_down(move_size, meta);
+                    let move_size = (ctx.metadata.view_area.0.height as usize).saturating_sub(1);
+                    self.move_cursor_down(move_size, &ctx.metadata);
                 } else if let Some(selection) = self.active_selection.take() {
                     let visual_delete = DeleteVisualOp {
                         selection,
                         deleted: None,
                     };
 
-                    if let Some(inverse_op) = self.apply(visual_delete.into(), meta) {
+                    if let Some(inverse_op) = self.apply(visual_delete.into(), ctx) {
                         self.undo_redo.push(inverse_op);
                     }
                 }
-
-                AppCommand::None
             }
             KeyCode::Char('A') => {
                 let is_max_normal_len = self.cursor_x == self.max_cursor_x();
@@ -947,8 +939,6 @@ impl Editor {
                 }
 
                 self.mode = EditorMode::Insert;
-                AppCommand::None
-
             }
             KeyCode::Char('a') => {
                 if self.active_selection.is_none() {
@@ -967,13 +957,11 @@ impl Editor {
 
                     self.mode = EditorMode::Insert;
                 }
-
-                AppCommand::None
             }
             KeyCode::Char('s') => {
                 if key_event.modifiers == KeyModifiers::CONTROL {
                     // save
-                   self.save_buffer(meta); 
+                   self.save_buffer(ctx); 
                 } else if let Some(selection) = self.active_selection.take() {
                     // visual delete and enter insert mode
 
@@ -982,7 +970,7 @@ impl Editor {
                         deleted: None,
                     };
 
-                    if let Some(inverse_op) = self.apply(visual_delete.into(), meta) {
+                    if let Some(inverse_op) = self.apply(visual_delete.into(), ctx) {
                         self.undo_redo.push(inverse_op);
                     }
 
@@ -999,15 +987,13 @@ impl Editor {
                             content: None,
                         };
 
-                        if let Some(undo_op) = self.apply(delete_forward.into(), meta) {
+                        if let Some(undo_op) = self.apply(delete_forward.into(), ctx) {
                             self.undo_redo.push(undo_op);
                         }
                     }
 
                     self.mode = EditorMode::Insert;
                 }
-
-                AppCommand::None
             }
             KeyCode::Char('O') => {
                 if let Some(selection) = self.active_selection.as_mut() {
@@ -1015,7 +1001,7 @@ impl Editor {
                     self.cursor_x = selection.cursor.column;
                     self.cursor_y = selection.cursor.line;
                     self.last_requested_x = self.cursor_x;
-                    self.snap_view_to_cursor(meta);
+                    self.snap_view_to_cursor(&ctx.metadata);
                 } else {
                     let has_no_lines = self.code.is_empty();
 
@@ -1035,13 +1021,11 @@ impl Editor {
                         }.into()
                     };
 
-                    let inverse_op = self.apply(insert_op, meta).unwrap();
+                    let inverse_op = self.apply(insert_op, ctx).unwrap();
                     self.undo_redo.push(inverse_op);
 
                     self.mode = EditorMode::Insert;
                 }
-
-                AppCommand::None
             }
             KeyCode::Char('o') => {
                 if let Some(selection) = self.active_selection.as_mut() {
@@ -1049,7 +1033,7 @@ impl Editor {
                     self.cursor_x = selection.cursor.column;
                     self.cursor_y = selection.cursor.line;
                     self.last_requested_x = self.cursor_x;
-                    self.snap_view_to_cursor(meta);
+                    self.snap_view_to_cursor(&ctx.metadata);
                 } else {
                     let insert_line_op = InsertLineOp {
                         y_pos: self.cursor_y + 1,
@@ -1058,68 +1042,56 @@ impl Editor {
                         cursor_from: Position { line: self.cursor_y, column: 0 },
                     };
 
-                    let inverse_op = self.apply(insert_line_op.into(), meta).unwrap();
+                    let inverse_op = self.apply(insert_line_op.into(), ctx).unwrap();
                     self.undo_redo.push(inverse_op);
 
                     self.mode = EditorMode::Insert;
                 }
-
-                AppCommand::None
             }
             KeyCode::Char('J') | KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.scroll_y = self.scroll_y.saturating_add(1);
-                AppCommand::None
             }
             KeyCode::Char('K') | KeyCode::Up if key_event.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.scroll_y = self.scroll_y.saturating_sub(1);
-                AppCommand::None
             }
             KeyCode::Char('u') => {
                 if key_event.modifiers == KeyModifiers::CONTROL {
-                    let move_size = (meta.view_area.0.height as usize).saturating_sub(1);
-                    self.move_cursor_up(move_size, meta);
-                    AppCommand::None
+                    let move_size = (ctx.metadata.view_area.0.height as usize).saturating_sub(1);
+                    self.move_cursor_up(move_size, &ctx.metadata);
                 } else {
                     if let Some(op) = self.undo_redo.undo() {
-                        self.apply(op, meta);
+                        self.apply(op, ctx);
                     }
-                    AppCommand::None
                 }
 
             }
             KeyCode::Char('r') => {
                 if key_event.modifiers != KeyModifiers::CONTROL {
-                    return AppCommand::None;
+                    return;
                 }
 
                 if let Some(op) = self.undo_redo.redo() {
-                    self.apply(op, meta);
+                    self.apply(op, ctx);
                 }
 
-                AppCommand::None
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                let move_size = get_vertical_move_distance(key_event, meta);
-                self.move_cursor_down(move_size, meta);
-                AppCommand::None
+                let move_size = get_vertical_move_distance(key_event, &ctx.metadata);
+                self.move_cursor_down(move_size, &ctx.metadata);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                let move_size = get_vertical_move_distance(key_event, meta);
-                self.move_cursor_up(move_size, meta);
-                AppCommand::None
+                let move_size = get_vertical_move_distance(key_event, &ctx.metadata);
+                self.move_cursor_up(move_size, &ctx.metadata);
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 self.move_cursor_left(1);
-                AppCommand::None
             }
             KeyCode::Char('l') | KeyCode::Right => {
                 self.move_cursor_right(1);
-                AppCommand::None
             }
             KeyCode::Char('0') => {
                 self.cursor_x = 0;
                 self.last_requested_x = self.cursor_x;
-                AppCommand::None
             }
             KeyCode::Char('$') => {
                 let max_cursor_x = self.max_cursor_x();
@@ -1131,48 +1103,40 @@ impl Editor {
                 }
 
                 self.last_requested_x = self.cursor_x;
-                AppCommand::None
             }
             KeyCode::Char('w') => {
-                self.move_to_next_word(meta);
-                AppCommand::None
+                self.move_to_next_word(&ctx.metadata);
             }
             KeyCode::Char('e') => {
-                self.move_to_next_word_end(meta);
-                AppCommand::None
+                self.move_to_next_word_end(&ctx.metadata);
             }
             KeyCode::Char('b') => {
-                self.move_to_previous_word_start(meta);
-                AppCommand::None
+                self.move_to_previous_word_start(&ctx.metadata);
             }
             KeyCode::Char('i') => {
                 if self.active_selection.is_none() {
                     self.mode = EditorMode::Insert;
                 }
-                AppCommand::None
             }
             KeyCode::Char('v') => {
                 if key_event.modifiers.is_empty() {
                     self.toggle_selection();
                 } else if key_event.modifiers == KeyModifiers::CONTROL {
                     if self.active_selection.is_none() {
-                        self.paste_from_clipboard(meta);
+                        self.paste_from_clipboard(ctx);
                     }
                 }
-
-                AppCommand::None
             }
             KeyCode::Char('c') => {
                 if key_event.modifiers == KeyModifiers::CONTROL && let Some(selection) = self.active_selection.take() {
-                    self.copy_selection_to_clipboard(&selection, meta);
+                    self.copy_selection_to_clipboard(&selection, ctx);
                     self.cursor_x = self.cursor_x.min(self.max_cursor_x());
                     self.last_requested_x = self.cursor_x;
                 } 
-
-                AppCommand::None
             }
             _other => {
-                AppCommand::None
+                // currently unbound
+                eprintln!("Unbound key in normal mode: {key_event:#?}");
             }
         };
 
@@ -1182,142 +1146,123 @@ impl Editor {
             let selection = self.active_selection.as_mut().unwrap();
             selection.cursor = new_cursor_pos;
         }
-
-        app_cmd
     }
 
-    fn handle_insert_mode_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
-        if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
-            match key_event.code {
-                KeyCode::Esc => {
-                    self.mode = EditorMode::Normal;
-                    let is_empty = self.code[self.cursor_y].is_empty();
-                    let is_off_line = self.cursor_x == self.code[self.cursor_y].len();
+    fn handle_insert_mode_event(&mut self, event: &Event, ctx: &WidgetContext) {
+        if ! event.is_key_press() {
+            return;
+        }
 
-                    if is_empty && is_off_line {
-                        // nothing to do, cursor is in valid position
-                    } else if is_off_line {
-                        assert!(!is_empty);
-                        // we are on a non-empty line but past the end (e.g. via 'a'), move back to last char
+        let Event::Key(key_event) = event else { unreachable!() };
+        match key_event.code {
+            KeyCode::Esc => {
+                self.mode = EditorMode::Normal;
+                let is_empty = self.code[self.cursor_y].is_empty();
+                let is_off_line = self.cursor_x == self.code[self.cursor_y].len();
+
+                if is_empty && is_off_line {
+                    // nothing to do, cursor is in valid position
+                } else if is_off_line {
+                    assert!(!is_empty);
+                    // we are on a non-empty line but past the end (e.g. via 'a'), move back to last char
+                    self.move_cursor_left(1);
+                }
+
+                self.last_requested_x = self.cursor_x;
+            }
+            KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('h') | KeyCode::Char('l') if key_event.modifiers == KeyModifiers::CONTROL => {
+                match key_event.code {
+                    KeyCode::Char('j') => {
+                        self.move_cursor_down(1, &ctx.metadata);
+                    }
+                    KeyCode::Char('k') => {
+                        self.move_cursor_up(1, &ctx.metadata);
+                    }
+                    KeyCode::Char('h') => {
                         self.move_cursor_left(1);
                     }
-
-                    self.last_requested_x = self.cursor_x;
-                    AppCommand::None
-                }
-                KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('h') | KeyCode::Char('l') if key_event.modifiers == KeyModifiers::CONTROL => {
-                    match key_event.code {
-                        KeyCode::Char('j') => {
-                            self.move_cursor_down(1, meta);
-                        }
-                        KeyCode::Char('k') => {
-                            self.move_cursor_up(1, meta);
-                        }
-                        KeyCode::Char('h') => {
-                            self.move_cursor_left(1);
-                        }
-                        KeyCode::Char('l') => {
-                            self.move_cursor_right(1);
-                        }
-                        _ => unreachable!(),
+                    KeyCode::Char('l') => {
+                        self.move_cursor_right(1);
                     }
-
-                    AppCommand::None
-                }
-                KeyCode::Left => {
-                    self.move_cursor_left(1);
-                    AppCommand::None
-                }
-                KeyCode::Right => {
-                    self.move_cursor_right(1);
-                    AppCommand::None
-                }
-                KeyCode::Up => {
-                    self.move_cursor_up(1, meta);
-                    AppCommand::None
-                }
-                KeyCode::Down => {
-                    self.move_cursor_down(1, meta);
-                    AppCommand::None
-                }
-                KeyCode::Char('v') if key_event.modifiers == KeyModifiers::CONTROL => {
-                    self.paste_from_clipboard(meta);
-                    AppCommand::None
-                }
-                KeyCode::Char(c) => {
-                    let insert_op = InsertSingleOp {
-                        at: Position { line: self.cursor_y, column: self.cursor_x },
-                        content: c.into(),
-                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x + 1 },
-                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
-                    };
-
-                    let undo_op = self.apply(insert_op.into(), meta).unwrap();
-                    self.undo_redo.push(undo_op);
-
-                    AppCommand::None
-                }
-                KeyCode::Backspace => {
-                    let delete_back = DeleteBackOp {
-                        at: Position { line: self.cursor_y, column: self.cursor_x },
-                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x.saturating_sub(1) },
-                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
-                        content: None,
-                    };
-                    if let Some(undo_op) = self.apply(delete_back.into(), meta) {
-                        self.undo_redo.push(undo_op);
-                    }
-
-                    AppCommand::None
-                }
-                KeyCode::Delete => {
-                    let delete_forward = DeleteForwardOp {
-                        at: Position { line: self.cursor_y, column: self.cursor_x },
-                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
-                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
-                        content: None,
-                    };
-
-                    if let Some(undo_op) = self.apply(delete_forward.into(), meta) {
-                        self.undo_redo.push(undo_op);
-                    }
-
-                    AppCommand::None
-                }
-                KeyCode::Enter => {
-                    let split_op = SplitOp {
-                        at: Position { line: self.cursor_y, column: self.cursor_x },
-                        cursor_to: Position { line: self.cursor_y + 1, column: 0 },
-                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
-                    };
-
-                    let undo_op = self.apply(split_op.into(), meta).unwrap();
-                    self.undo_redo.push(undo_op);
-
-                    AppCommand::None
-                }
-                KeyCode::Tab => {
-                    let content = " ".repeat(4);
-                    let len = content.len();
-
-                    let insert_op = InsertOp {
-                        at: Position { line: self.cursor_y, column: self.cursor_x },
-                        content: StringOrChar::String(content),
-                        cursor_to: Position { line: self.cursor_y, column: self.cursor_x + len },
-                        cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
-                    };
-
-                    let undo_op = self.apply(insert_op.into(), meta).unwrap();
-                    self.undo_redo.push(undo_op);
-
-                    AppCommand::None
-                }
-                _other => {
-                    AppCommand::None
+                    _ => unreachable!(),
                 }
             }
-        } else {
-            AppCommand::None
+            KeyCode::Left => {
+                self.move_cursor_left(1);
+            }
+            KeyCode::Right => {
+                self.move_cursor_right(1);
+            }
+            KeyCode::Up => {
+                self.move_cursor_up(1, &ctx.metadata);
+            }
+            KeyCode::Down => {
+                self.move_cursor_down(1, &ctx.metadata);
+            }
+            KeyCode::Char('v') if key_event.modifiers == KeyModifiers::CONTROL => {
+                self.paste_from_clipboard(ctx);
+            }
+            KeyCode::Char(c) => {
+                let insert_op = InsertSingleOp {
+                    at: Position { line: self.cursor_y, column: self.cursor_x },
+                    content: c.into(),
+                    cursor_to: Position { line: self.cursor_y, column: self.cursor_x + 1 },
+                    cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
+                };
+
+                let undo_op = self.apply(insert_op.into(), ctx).unwrap();
+                self.undo_redo.push(undo_op);
+            }
+            KeyCode::Backspace => {
+                let delete_back = DeleteBackOp {
+                    at: Position { line: self.cursor_y, column: self.cursor_x },
+                    cursor_to: Position { line: self.cursor_y, column: self.cursor_x.saturating_sub(1) },
+                    cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
+                    content: None,
+                };
+                if let Some(undo_op) = self.apply(delete_back.into(), ctx) {
+                    self.undo_redo.push(undo_op);
+                }
+            }
+            KeyCode::Delete => {
+                let delete_forward = DeleteForwardOp {
+                    at: Position { line: self.cursor_y, column: self.cursor_x },
+                    cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+                    cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
+                    content: None,
+                };
+
+                if let Some(undo_op) = self.apply(delete_forward.into(), ctx) {
+                    self.undo_redo.push(undo_op);
+                }
+            }
+            KeyCode::Enter => {
+                let split_op = SplitOp {
+                    at: Position { line: self.cursor_y, column: self.cursor_x },
+                    cursor_to: Position { line: self.cursor_y + 1, column: 0 },
+                    cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
+                };
+
+                let undo_op = self.apply(split_op.into(), ctx).unwrap();
+                self.undo_redo.push(undo_op);
+            }
+            KeyCode::Tab => {
+                let content = " ".repeat(4);
+                let len = content.len();
+
+                let insert_op = InsertOp {
+                    at: Position { line: self.cursor_y, column: self.cursor_x },
+                    content: StringOrChar::String(content),
+                    cursor_to: Position { line: self.cursor_y, column: self.cursor_x + len },
+                    cursor_from: Position { line: self.cursor_y, column: self.cursor_x },
+                };
+
+                let undo_op = self.apply(insert_op.into(), ctx).unwrap();
+                self.undo_redo.push(undo_op);
+            }
+            _other => {
+                eprintln!("Unbound key in insert mode: {key_event:#?}");
+            }
         }
     }
     
@@ -1362,10 +1307,10 @@ impl Editor {
 }
 impl ChasmWidget for Editor {
     
-    fn handle_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand {
+    fn handle_event(&mut self, event: &Event, ctx: &WidgetContext) {
         match self.mode {
-            EditorMode::Normal => self.handle_normal_mode_event(event, meta),
-            EditorMode::Insert => self.handle_insert_mode_event(event, meta),
+            EditorMode::Normal => self.handle_normal_mode_event(event, ctx),
+            EditorMode::Insert => self.handle_insert_mode_event(event, ctx),
         }
     }
 

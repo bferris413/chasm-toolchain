@@ -18,14 +18,8 @@ use ratatui::{
     widgets::{Block, Borders, FrameExt, List, ListState, Paragraph, StatefulWidget, Widget, WidgetRef}
 };
 
-#[derive(Copy, Clone, Debug, Default)]
-struct Metadata {
-    status_area: StatusArea,
-    view_area: ViewArea,
-}
-
 trait ChasmWidget: Debug {
-    fn handle_event(&mut self, event: &Event, meta: &Metadata) -> AppCommand;
+    fn handle_event(&mut self, event: &Event, ctx: &WidgetContext);
     fn render(&self, area: Rect, buf: &mut Buffer);
 }
 impl Widget for &dyn ChasmWidget {
@@ -37,6 +31,47 @@ impl WidgetRef for &dyn ChasmWidget {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         self.render(area, buf);
     }
+}
+
+struct WidgetContext<'a> {
+    metadata: &'a Metadata,
+    command_queue_tx: CommandQueueTx<'a>,
+}
+
+struct AppContext {
+    metadata: Metadata,
+    command_queue: CommandQueue,
+}
+impl AppContext {
+    fn widget_context<'a>(&'a mut self) -> WidgetContext<'a> {
+        WidgetContext {
+            metadata: &self.metadata,
+            command_queue_tx: self.command_queue.tx(),
+        }
+    }
+}
+
+struct CommandQueue {
+
+}
+impl CommandQueue {
+    fn new() -> Self {
+        Self {}    
+    }
+    
+    fn tx<'a>(&'a mut self) -> CommandQueueTx<'a> {
+        CommandQueueTx { cq: self }
+    }
+}
+
+struct CommandQueueTx<'a> {
+    cq: &'a mut CommandQueue,
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+struct Metadata {
+    status_area: StatusArea,
+    view_area: ViewArea,
 }
 
 pub fn code(args: CodeArgs) -> Result<()> {
@@ -87,16 +122,19 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        while !self.should_exit {
-            let mut metadata = Metadata::default();
 
+        let metadata = Metadata::default();
+        let cq = CommandQueue::new();
+        let mut app_ctx = AppContext { metadata, command_queue: cq };
+
+        while !self.should_exit {
             terminal.draw(|frame| {
                 let (status_area, view_area) = Self::top_level_layout(&frame);
-                metadata = Metadata { status_area, view_area };
+                app_ctx.metadata = Metadata { status_area, view_area };
                 self.draw(frame, status_area, view_area);
             })?;
 
-            self.handle_events(metadata)?;
+            self.handle_events(&mut app_ctx)?;
         }
         Ok(())
     }
@@ -118,10 +156,11 @@ impl App {
         frame.render_widget_ref(self.view_stack.last().unwrap().as_ref(), view_area.0);
     }
 
-    fn handle_events(&mut self, meta: Metadata) -> Result<()> {
+    fn handle_events(&mut self, app_ctx: &mut AppContext) -> Result<()> {
+        let widget_ctx = app_ctx.widget_context();
         match event::read()? {
             e @ Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.status.handle_event(&e, &meta);
+                self.status.handle_event(&e, &widget_ctx);
 
                 match key_event.code {
                     KeyCode::Char('q') if key_event.modifiers == KeyModifiers::CONTROL => {
@@ -132,32 +171,33 @@ impl App {
                         }
                     }
                     _other => {
-                        let cmd = self.view_stack.last_mut().unwrap().handle_event(&e, &meta);
-                        match cmd {
-                            AppCommand::Yes => {
-                                if self.exit_modal_active {
-                                    self.view_stack.pop();
-                                    self.exit_modal_active = false;
-                                    self.should_exit = true;
-                                }
-                            }
-                            AppCommand::No => {
-                                if self.exit_modal_active {
-                                    self.view_stack.pop();
-                                    self.exit_modal_active = false;
-                                }
-                            }
-                            AppCommand::None => {}
-                            AppCommand::PushView(widget) => self.view_stack.push(widget),
-                            other => { 
-                                panic!("Unexpected command from exit modal: {other:?}");
-                            }
-                        }
+                        self.view_stack.last_mut().unwrap().handle_event(&e, &widget_ctx);
                     }
                 }
+
+                // match cmd {
+                //     AppCommand::Yes => {
+                //         if self.exit_modal_active {
+                //             self.view_stack.pop();
+                //             self.exit_modal_active = false;
+                //             self.should_exit = true;
+                //         }
+                //     }
+                //     AppCommand::No => {
+                //         if self.exit_modal_active {
+                //             self.view_stack.pop();
+                //             self.exit_modal_active = false;
+                //         }
+                //     }
+                //     AppCommand::None => {}
+                //     AppCommand::PushView(widget) => self.view_stack.push(widget),
+                //     other => { 
+                //         panic!("Unexpected command from exit modal: {other:?}");
+                //     }
+                // }
             }
             e => {
-                self.status.handle_event(&e, &meta);
+                self.status.handle_event(&e, &widget_ctx);
             }
         };
 
@@ -198,7 +238,7 @@ impl StatusBar {
      }
 }
 impl ChasmWidget for StatusBar {
-    fn handle_event(&mut self, event: &Event, _meta: &Metadata) -> AppCommand {
+    fn handle_event(&mut self, event: &Event, _ctx: &WidgetContext) {
         match event {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                 self.event_text.clear();
@@ -214,8 +254,6 @@ impl ChasmWidget for StatusBar {
                 write!(&mut self.event_text, "<event {:?}>", other).unwrap();
             }
         };
-
-        AppCommand::None
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -286,7 +324,7 @@ impl ModuleSelectView {
 }
 
 impl ChasmWidget for ModuleSelectView {
-    fn handle_event(&mut self, event: &Event, _meta: &Metadata) -> AppCommand {
+    fn handle_event(&mut self, event: &Event, _ctx: &WidgetContext) {
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -305,7 +343,7 @@ impl ChasmWidget for ModuleSelectView {
                         let module_path = self.module_paths[selected].clone();
                         let mod_or_file = ModuleOrFile::Module(module_path);
                         let editor = Editor::new(mod_or_file);
-                        return AppCommand::PushView(Box::new(editor));
+                        // return AppCommand::PushView(Box::new(editor));
                     }
 
                 }
@@ -314,8 +352,6 @@ impl ChasmWidget for ModuleSelectView {
                 }
             }
         }
-
-        AppCommand::None
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -351,55 +387,48 @@ impl YesNoModal {
     }
 }
 impl ChasmWidget for YesNoModal {
-    fn handle_event(&mut self, event: &Event, _meta: &Metadata) -> AppCommand {
+    fn handle_event(&mut self, event: &Event, _ctx: &WidgetContext) {
         if let Event::Key(key_event) = event && key_event.kind == KeyEventKind::Press {
             match key_event.code {
                 KeyCode::Char('h') | KeyCode::Left => {
                     // left, no wrap
                     self.selection = ModalSelection::Yes;
-                    AppCommand::None
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
                     // right, no wrap
                     self.selection = ModalSelection::No;
-                    AppCommand::None
                 }
                 KeyCode::Char('Y') => {
                     if matches!(self.selection, ModalSelection::Yes) {
-                        AppCommand::Yes
+                        // AppCommand::Yes
                     } else {
                         self.selection = ModalSelection::Yes;
-                        AppCommand::None
                     }
                 }
                 KeyCode::Char('N') => {
                     if matches!(self.selection, ModalSelection::No) {
-                        AppCommand::No
+                        // AppCommand::No
                     } else {
                         self.selection = ModalSelection::No;
-                        AppCommand::None
                     }
                 }
                 KeyCode::Tab => {
                     // toggle
                     self.selection = !self.selection;
-                    AppCommand::None
                 }
                 KeyCode::Enter => {
-                    match self.selection {
-                        ModalSelection::Yes => AppCommand::Yes,
-                        ModalSelection::No => AppCommand::No,
-                    }
+                    // match self.selection {
+                    //     ModalSelection::Yes => AppCommand::Yes,
+                    //     ModalSelection::No => AppCommand::No,
+                    // }
                 }
                 KeyCode::Esc => {
-                    AppCommand::No
+                    // AppCommand::No
                 }
                 _other => {
-                    AppCommand::None
                 }
             }
         } else {
-            AppCommand::None
         }
     }
 
