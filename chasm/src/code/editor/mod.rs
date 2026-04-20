@@ -16,7 +16,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
 use crate::code::editor::ops::DeleteXOp;
-use crate::code::{WidgetContext, ChasmWidget, Metadata};
+use crate::code::{AppCommand, ChasmWidget, Metadata, WidgetContext};
 use crate::project::ModulePath;
 use ops::{DeleteBackOp, DeleteForwardOp, DeleteVisualOp, EditOp, InsertLineOp, InsertOp, InsertSingleOp, InsertVisualOp, SplitOp};
 use undo_redo::UndoRedoStack;
@@ -537,16 +537,18 @@ impl Editor {
         self.snap_view_to_cursor(meta);
     }
 
-    fn paste_from_clipboard(&mut self, ctx: &WidgetContext) {
+    fn paste_from_clipboard(&mut self, ctx: &mut WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
-            eprintln!("Can't access clipboard for paste: {}", self.clipboard.as_ref().err().unwrap());
+            let msg = format!("Can't access clipboard for paste: {}", self.clipboard.as_ref().err().unwrap());
+            ctx.command_queue_tx.push(AppCommand::Log(msg));
             return;
         };
         
         let content = match clipboard.get_text() {
             Ok(text) => text,
             Err(e) => {
-                eprintln!("Failed to get clipboard text for paste: {e}");
+                let msg = format!("Failed to get clipboard text for paste: {e}");
+                ctx.command_queue_tx.push(AppCommand::Log(msg));
                 return;
             }
         };
@@ -575,9 +577,10 @@ impl Editor {
 
     }
 
-    fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, ctx: &WidgetContext) {
+    fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, ctx: &mut WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
-            eprintln!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
+            let msg = format!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
+            ctx.command_queue_tx.push(AppCommand::Log(msg));
             return;
         };
 
@@ -628,27 +631,31 @@ impl Editor {
         };
 
         if let Err(e) = clipboard.set_text(content) {
-            eprintln!("Failed to set clipboard text during cut/copy: {e}");
+            let msg = format!("Failed to set clipboard text during cut/copy: {e}");
+            ctx.command_queue_tx.push(AppCommand::Log(msg));
         }
     }
 
-    fn set_clipboard_text(&mut self, text: String, ctx: &WidgetContext) {
+    fn set_clipboard_text(&mut self, text: String, ctx: &mut WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
-            eprintln!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
+            let msg = format!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
+            ctx.command_queue_tx.push(AppCommand::Log(msg));
             return;
         };
 
         if let Err(e) = clipboard.set_text(text) {
-            eprintln!("Failed to set clipboard text during cut/copy: {e}");
+            let msg = format!("Failed to set clipboard text during cut/copy: {e}");
+            ctx.command_queue_tx.push(AppCommand::Log(msg));
         }
     }
 
-    fn save_buffer(&self, ctx: &WidgetContext) {
+    fn save_buffer(&self, ctx: &mut WidgetContext) {
         let path = self.mod_or_file.path();
         let file = match File::create(&path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("Failed to save file {}: {}", path.display(), e);
+                let msg = format!("Failed to save file {}: {}", path.display(), e);
+                ctx.command_queue_tx.push(AppCommand::Log(msg));
                 return;
             }
         };
@@ -658,13 +665,15 @@ impl Editor {
         let nlines = self.code.len();
         for (i, line) in self.code.iter().enumerate() {
             if let Err(e) = writer.write_all(line.as_bytes()) {
-                eprintln!("Failed to write to file {}: {}", path.display(), e);
+                let msg = format!("Failed to write to file {}: {}", path.display(), e);
+                ctx.command_queue_tx.push(AppCommand::Log(msg));
                 return;
             }
 
             if i != nlines - 1 {
                 if let Err(e) = writer.write_all(b"\n") {
-                    eprintln!("Failed to write to file {}: {}", path.display(), e);
+                    let msg = format!("Failed to write to file {}: {}", path.display(), e);
+                    ctx.command_queue_tx.push(AppCommand::Log(msg));
                     return;
                 }
             }
@@ -834,7 +843,7 @@ impl Editor {
         }
     }
 
-    fn handle_normal_mode_event(&mut self, event: &Event, ctx: &WidgetContext) {
+    fn handle_normal_mode_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
         fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
             if kev.modifiers == KeyModifiers::CONTROL {
                 (meta.view_area.0.height as usize).saturating_sub(1)
@@ -1136,7 +1145,8 @@ impl Editor {
             }
             _other => {
                 // currently unbound
-                eprintln!("Unbound key in normal mode: {key_event:#?}");
+                let msg = format!("Unbound key in normal mode: {key_event:#?}");
+                ctx.command_queue_tx.push(AppCommand::Log(msg));
             }
         };
 
@@ -1148,7 +1158,7 @@ impl Editor {
         }
     }
 
-    fn handle_insert_mode_event(&mut self, event: &Event, ctx: &WidgetContext) {
+    fn handle_insert_mode_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
         if ! event.is_key_press() {
             return;
         }
@@ -1261,7 +1271,8 @@ impl Editor {
                 self.undo_redo.push(undo_op);
             }
             _other => {
-                eprintln!("Unbound key in insert mode: {key_event:#?}");
+                let msg = format!("Unbound key in insert mode: {key_event:#?}");
+                ctx.command_queue_tx.push(AppCommand::Log(msg));
             }
         }
     }

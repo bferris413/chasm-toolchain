@@ -59,6 +59,7 @@ pub struct InsertVisualOp {
     pub selection: VisualSelection,
     pub content: Content,
     pub cursor_to: Position,
+    #[allow(unused)]
     pub cursor_from: Position,
 }
 impl InsertVisualOp {

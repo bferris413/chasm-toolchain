@@ -1,13 +1,20 @@
 mod editor;
 
+#[cfg(target_family = "unix")]
+use std::path::PathBuf;
 use std::{
-    collections::VecDeque, fmt::{Debug, Write}, ops::Not, sync::{Arc, RwLock}
+    collections::VecDeque,
+    fmt::{Debug, Write},
+    fs::{File, OpenOptions},
+    io::Write as _,
+    ops::Not,
+    sync::{Arc, RwLock, mpsc::{self, Sender}}
 };
 
 use crate::{CodeArgs, FileOrProject, code::editor::{Editor, ModuleOrFile}, project::{ChasmProject, ModulePath}};
 
-use anyhow::Result;
-use clap::Command;
+use anyhow::{Result, bail};
+use chrono::Utc;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal,
@@ -87,7 +94,9 @@ struct Metadata {
 }
 
 pub fn code(args: CodeArgs) -> Result<()> {
-    ratatui::run(|term| App::new(args.file_or_project).run(term))
+    let (log_file_path, log_file) = create_log_file()?;
+    eprintln!("Logging to {}", log_file_path.display());
+    ratatui::run(|term| App::new(args.file_or_project, log_file).run(term))
 }
 
 #[derive(Debug)]
@@ -95,8 +104,11 @@ enum AppCommand {
     None,
     PopView,
     PushView(Box<dyn ChasmWidget>),
+
     Yes,
     No,
+
+    Log(String),
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -111,11 +123,13 @@ pub struct App {
 
     should_exit: bool,
     exit_modal_active: bool,
-    metadata: Metadata,
+    log_tx: Sender<String>,
+    log_handle: std::thread::JoinHandle<()>,
 }
 impl App {
-    pub(crate) fn new(file_or_project: FileOrProject) -> Self {
+    pub(crate) fn new(file_or_project: FileOrProject, log_file: File) -> Self {
         let first_widget = select_first_widget(file_or_project);
+        let (log_tx, log_handle) = spawn_logger(log_file);
 
         Self {
             status: StatusBar::new(),
@@ -123,12 +137,8 @@ impl App {
 
             should_exit: false,
             exit_modal_active: false,
-
-            // populated in first draw call, but needs to be initialized to something
-            metadata: Metadata {
-                status_area: StatusArea(Rect::default()),
-                view_area: ViewArea(Rect::default()),
-            },
+            log_tx,
+            log_handle,
         }
     }
 
@@ -203,6 +213,15 @@ impl App {
                         }
                         AppCommand::None => {}
                         AppCommand::PushView(widget) => self.view_stack.push(widget),
+                        AppCommand::Log(record) => {
+                            if self.log_handle.is_finished() {
+                                bail!("Logger thread has terminated unexpectedly");
+                            }
+
+                            if let Err(e) = self.log_tx.send(record) {
+                                bail!("Logger thread dropped rx handle: {e}");
+                            }
+                        }
                         other => { 
                             panic!("Unexpected command from exit modal: {other:?}");
                         }
@@ -514,4 +533,47 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let y = area.y + (area.height.saturating_sub(height)) / 2;
 
     Rect::new(x, y, width, height)
+}
+
+#[cfg(target_family = "unix")]
+fn create_log_file() -> Result<(PathBuf, File)> {
+    let xdg_chasm_base = xdg::BaseDirectories::with_prefix("chasm");
+    let log_file_path = xdg_chasm_base.place_state_file("chasm-code.log")?;
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file_path)?;
+
+    Ok((log_file_path, log_file))
+}
+
+#[cfg(target_family = "windows")]
+fn create_log_file() -> Result<(PathBuf, File)> {
+    let log_file_path = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)?
+        .join("Chasm")
+        .join("logs")
+        .join("chasm-code.log");
+
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file_path)?;
+
+    Ok((log_file_path, log_file))
+}
+
+fn spawn_logger(log_file: File) -> (Sender<String>, std::thread::JoinHandle<()>) {
+    let (log_tx, log_rx) = mpsc::channel();
+
+    let handle = std::thread::spawn(move || {
+        while let Ok(log_entry) = log_rx.recv() {
+            let now = Utc::now();
+            if let Err(e) = writeln!(&log_file, "[{}] {}", now, log_entry) {
+                eprintln!("Failed to write to log file: {e}");
+            }
+        }
+    });
+
+    (log_tx, handle)
 }

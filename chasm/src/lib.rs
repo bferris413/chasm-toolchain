@@ -36,6 +36,9 @@ pub struct CodeArgs {
     /// The directory of the Chasm project
     #[arg(value_parser = parse_file_or_project)]
     file_or_project: FileOrProject,
+
+    // #[arg(default_value_t)]
+    // log_to: PathBuf,
 }
 
 #[derive(Clone, Debug)]
