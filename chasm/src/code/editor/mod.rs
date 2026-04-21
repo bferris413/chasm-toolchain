@@ -4,6 +4,7 @@ mod undo_redo;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
+use std::os::macos::raw;
 use std::path::PathBuf;
 use std::{iter::Peekable, ops::Range};
 
@@ -57,6 +58,9 @@ pub (super) struct Editor {
 
     undo_redo: UndoRedoStack,
     clipboard: Result<Clipboard, arboard::Error>,
+
+    // yanked/deleted text
+    content_register: Option<String>,
 }
 impl std::fmt::Debug for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -97,6 +101,7 @@ impl Editor {
             active_selection: None,
             undo_redo: UndoRedoStack::new(),
             clipboard: Clipboard::new(),
+            content_register: None,
         }
     }
 
@@ -115,6 +120,21 @@ impl Editor {
             EditorMode::Insert => self.code[self.cursor_y].len(),
             EditorMode::Normal => self.code[self.cursor_y].len().saturating_sub(1),
         }
+    }
+
+    fn clamp_cursor_x(&mut self) {
+        let is_empty = self.code[self.cursor_y].is_empty();
+        let is_off_line = self.cursor_x == self.code[self.cursor_y].len();
+
+        if is_empty && is_off_line {
+            // nothing to do, cursor is in valid position
+        } else if is_off_line {
+            assert!(!is_empty);
+            // we are on a non-empty line but past the end (e.g. via 'a'), move back to last char
+            self.move_cursor_left(1);
+        }
+
+        self.last_requested_x = self.cursor_x;
     }
 
     fn move_cursor_up(&mut self, move_size: usize, meta: &Metadata) {
@@ -577,13 +597,34 @@ impl Editor {
 
     }
 
-    fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, ctx: &mut WidgetContext) {
-        let Ok(clipboard) = self.clipboard.as_mut() else {
-            let msg = format!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
-            ctx.command_queue_tx.push(AppCommand::Log(msg));
-            return;
-        };
+    fn copy_selection_to_register(&mut self, selection: &VisualSelection, ctx: &mut WidgetContext) {
+        // TODO: this converts the selection to String content. We'd rather have the original `Content` type,
+        // but creating it is complected in `fn visual_delete` so we're just using this for now
+        let content = self.get_selection_content(selection);
+        let msg = format!("Selection content: {content:?}");
+        ctx.command_queue_tx.push(AppCommand::Log(msg));
 
+        if content.is_empty() {
+            return;
+        }
+
+        let msg = format!("Copied {} bytes to register", content.len());
+        ctx.command_queue_tx.push(AppCommand::Log(msg));
+
+        self.content_register = Some(content);
+    }
+
+    fn copy_selection_to_clipboard(&mut self, selection: &VisualSelection, ctx: &mut WidgetContext) {
+        let selection_content = self.get_selection_content(selection);
+
+        if selection_content.is_empty() {
+            return;
+        }
+
+        self.set_clipboard_text(selection_content, ctx);
+    }
+
+    fn get_selection_content(&self, selection: &VisualSelection) -> String {
         let (start, end) = selection_absolute_order(selection);
         let content = if start.line == end.line {
             // all content on the same line
@@ -630,10 +671,7 @@ impl Editor {
             joined_lines
         };
 
-        if let Err(e) = clipboard.set_text(content) {
-            let msg = format!("Failed to set clipboard text during cut/copy: {e}");
-            ctx.command_queue_tx.push(AppCommand::Log(msg));
-        }
+        content
     }
 
     fn set_clipboard_text(&mut self, text: String, ctx: &mut WidgetContext) {
@@ -681,7 +719,9 @@ impl Editor {
     }
 
     /// Applies the edit operation and returns the inverse *if* something was performed.
-    fn apply(&mut self, op: EditOp, ctx: &WidgetContext) -> Option<EditOp> {
+    fn apply(&mut self, op: EditOp, ctx: &mut WidgetContext) -> Option<EditOp> {
+        let msg = format!("Applying edit op: {op:#?}");
+        ctx.command_queue_tx.push(AppCommand::Log(msg));
         match op {
             EditOp::Insert(insert_op) => {
                 let inverse_op = insert_op.clone().invert();
@@ -862,6 +902,7 @@ impl Editor {
             KeyCode::Esc => {
                 if self.active_selection.is_some() {
                     self.active_selection = None;
+                    self.clamp_cursor_x();
                 }
             }
             KeyCode::Char('G') => {
@@ -967,6 +1008,37 @@ impl Editor {
                     self.mode = EditorMode::Insert;
                 }
             }
+            KeyCode::Char('y') => {
+                if let Some(selection) = self.active_selection.take() {
+                    let msg = format!("yanked selection: {:?}", selection);
+                    ctx.command_queue_tx.push(AppCommand::Log(msg));
+                    self.copy_selection_to_register(&selection, ctx);
+                    self.move_to(selection.anchor, &ctx.metadata);
+                }
+            }
+            KeyCode::Char('p') => {
+                if self.content_register.is_none() {
+                    return;
+                }
+
+                let content = self.content_register.as_ref().unwrap().clone(); 
+                let content_lines = raw_text_to_lines(content.clone());
+                let editor_content = Content::from(content_lines);
+
+                let pseudo_selection = self.get_selection_from(&editor_content);
+                let (sel_start, _sel_end) = selection_absolute_order(&pseudo_selection);
+
+                let insert_op = InsertVisualOp {
+                    selection: pseudo_selection,
+                    content: editor_content,
+                    cursor_from: sel_start,
+                    cursor_to: sel_start, // cursor stays on 'p'
+                };
+
+                if let Some(inverse_op) = self.apply(insert_op.into(), ctx) {
+                    self.undo_redo.push(inverse_op);
+                }
+            }
             KeyCode::Char('s') => {
                 if key_event.modifiers == KeyModifiers::CONTROL {
                     // save
@@ -1069,6 +1141,8 @@ impl Editor {
                     self.move_cursor_up(move_size, &ctx.metadata);
                 } else {
                     if let Some(op) = self.undo_redo.undo() {
+                        let msg = format!("Undoing op: {op:#?}");
+                        ctx.command_queue_tx.push(AppCommand::Log(msg));
                         self.apply(op, ctx);
                     }
                 }
@@ -1167,18 +1241,7 @@ impl Editor {
         match key_event.code {
             KeyCode::Esc => {
                 self.mode = EditorMode::Normal;
-                let is_empty = self.code[self.cursor_y].is_empty();
-                let is_off_line = self.cursor_x == self.code[self.cursor_y].len();
-
-                if is_empty && is_off_line {
-                    // nothing to do, cursor is in valid position
-                } else if is_off_line {
-                    assert!(!is_empty);
-                    // we are on a non-empty line but past the end (e.g. via 'a'), move back to last char
-                    self.move_cursor_left(1);
-                }
-
-                self.last_requested_x = self.cursor_x;
+                self.clamp_cursor_x();
             }
             KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('h') | KeyCode::Char('l') if key_event.modifiers == KeyModifiers::CONTROL => {
                 match key_event.code {
@@ -1293,19 +1356,27 @@ impl Editor {
                 }
             }
             Content::Lines(lines) => {
-                let mut new_lines_count = 1 + lines.new_lines.len(); // new lines + last line
+                let mut new_lines_count = 1 + lines.new_lines.len();
 
                 if lines.last_line_split {
                     new_lines_count += 1;
                 }
 
-                let end_line = cursor.line + new_lines_count;
+                let mut end_line = cursor.line + new_lines_count;
                 let end_col = if lines.last_line_split {
                     0
                 } else {
                     // selection is inclusive
                     match lines.last_line {
-                        StringOrChar::String(ref s) => s.len().saturating_sub(1),
+                        StringOrChar::String(ref s) => {
+                            if s.is_empty() {
+                                let last_new_line_len = lines.new_lines.last().map(|l| l.len());
+                                end_line -= 1;
+                                last_new_line_len.unwrap_or(lines.cur_line.len())
+                            } else {
+                                s.len().saturating_sub(1)
+                            }
+                        },
                         StringOrChar::Char(_) => 0,
                     }
                 };
@@ -1402,7 +1473,7 @@ impl ChasmWidget for Editor {
                     };
 
                     // This will visually account for:
-                    // - the invisible-but-implied newline at the end of each line, or
+                    // - the implied newline at the end of each line, or
                     // - the cursor's current position, or
                     // - the cursor's start position, when the selection moved backwards
                     x_width += 1;
@@ -1415,7 +1486,7 @@ impl ChasmWidget for Editor {
 
         // draw cursor (after all highlights/selections)
         if cursor_line_is_visible {
-            // TODO: we do nothing we x scroll
+            // TODO: we do nothing with x scroll
             if self.cursor_x < code_area.width as usize {
                 // cursor is within visible code area, draw normally
                 let cursor_screen_y = self.cursor_y - start;
@@ -1538,6 +1609,14 @@ struct Position {
 enum StringOrChar {
     String(String),
     Char(char),
+}
+impl StringOrChar {
+    fn len(&self) -> usize {
+        match self {
+            StringOrChar::String(s) => s.len(),
+            StringOrChar::Char(_) => 1,
+        }
+    }
 }
 impl From<String> for StringOrChar {
     fn from(s: String) -> Self {
