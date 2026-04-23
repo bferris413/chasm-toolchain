@@ -1,10 +1,9 @@
 mod ops;
 mod undo_redo;
 
-use std::fmt;
+use std::{fmt, vec};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::os::macos::raw;
 use std::path::PathBuf;
 use std::{iter::Peekable, ops::Range};
 
@@ -74,6 +73,8 @@ impl std::fmt::Debug for Editor {
             .field("last_requested_x", &self.last_requested_x)
             .field("active_selection", &self.active_selection)
             .field("clipboard", &self.clipboard.as_ref().map(|_| "<clipboard>"))
+            .field("undo_redo", &self.undo_redo)
+            .field("content_register", &self.content_register)
             .finish()
     }
 }
@@ -281,132 +282,97 @@ impl Editor {
         self.active_selection.is_some()
     }
 
-    // TODO: refactor, my mental model for what this _should_ look like isn't clear yet
-    fn visual_delete(&mut self, op: DeleteVisualOp, ctx: &WidgetContext) -> Option<EditOp> {
-        if op.selection.is_empty() {
-            self.delete_forward()
+    fn position_includes_newline(&self, pos: &Position) -> bool {
+        let line = &self.code[pos.line];
+
+        if line.is_empty() {
+            true
+        } else if pos.column == line.len() {
+            true
         } else {
-            let old_pos = Position { line: self.cursor_y, column: self.cursor_x };
-            let (start, end) = selection_absolute_order(&op.selection);
+            false
+        }
+    }
 
-            let removed_content = if start.line == end.line {
-                // single line selection, delete the selected range
-                let line_len = self.code[start.line].len();
+    fn is_last_line(&self, line_num: usize) -> bool {
+        line_num == self.code.len().saturating_sub(1)
+    }
 
-                if end.column == line_len && end.line < self.code.len() - 1 {
-                    // user is deleting the logical newline (like vim 'v$')
-
-                    // delete the logical newline by merging with the next line
-                    let line_to_append = self.code.remove(end.line + 1);
-                    self.code[end.line].push_str(&line_to_append);
-
-                    let line = &mut self.code[start.line];
-                    let removed: String = line.drain(start.column..end.column).collect();
-
-                    Content::Lines(Lines {
-                        cur_line: removed.into(),
-                        new_lines: vec![],
-                        last_line: String::new().into(),
-                        last_line_split: false,
-                    })
-                } else if end.column == self.code[start.line].len() {
-
-                    let line = &mut self.code[start.line];
-                    let removed: String = line.drain(start.column..end.column).collect();
-
-                    Content::Lines(Lines {
-                        cur_line: removed.into(),
-                        new_lines: vec![],
-                        last_line: String::new().into(),
-                        last_line_split: false,
-                    })
-
-                } else {
-                    let line = &mut self.code[start.line];
-                    let removed: String = line.drain(start.column..=end.column).collect();
-                    Content::StringOrChar(removed.into())
-
-                }
-
-            } else {
-                // multi-line selection, delete the selected range and merge lines
-                let splice_start = if self.code[start.line].is_empty() { start.line } else { start.line + 1 };
-
-                let first_line = &mut self.code[start.line];
-                let mut first_line_removed = String::new();
-                if ! first_line.is_empty() {
-                    first_line_removed = first_line.drain(start.column..).collect();
-                }
-
-                let last_line_len = self.code[end.line].len();
-                let mut last_line_removed = String::new();
-                let mut last_line_split = false;
-
-                if last_line_len != 0 {
-                    if end.column == last_line_len && end.line < self.code.len() - 1 {
-                        // user is deleting the logical newline (like vim 'v$')
-
-                        // delete the logical newline by merging with the next line
-                        let line_to_append = self.code.remove(end.line + 1);
-                        self.code[end.line].push_str(&line_to_append);
-
-                        last_line_removed = self.code[end.line].drain(..end.column).collect();
-                        last_line_split = true;
-                    } else if end.column == last_line_len {
-                        last_line_removed = self.code[end.line].drain(..end.column).collect();
-                        last_line_split = true;
-                    } else {
-                        last_line_removed = self.code[end.line].drain(..=end.column).collect();
-                    }
-                }
-
-                // remove all lines between start and end
-                let spliced_lines = if end.line == splice_start {
-                    vec![]
-                } else {
-                    self.code.splice(splice_start..end.line, std::iter::empty()).collect()
-                };
-
-                // merge first and last line
-                let last_line = self.code.remove(start.line + 1);
-                self.code[start.line].push_str(&last_line);
-
-                if self.code[start.line].is_empty() && self.code.len() > 1 {
-                    self.code.remove(start.line);
-                    last_line_split = true;
-                }
-
-                Content::Lines(Lines {
-                    cur_line: first_line_removed.into(),
-                    new_lines: spliced_lines,
-                    last_line: last_line_removed.into(),
-                    last_line_split,
-                })
-            };
-
-            let target_y = start.line;
-            let y_distance = self.cursor_y.saturating_sub(target_y);
-            self.move_cursor_up(y_distance, &ctx.metadata);
-
-            let target_x = start.column;
-            if self.cursor_x > target_x {
-                let x_distance = self.cursor_x.saturating_sub(target_x);
-                self.move_cursor_left(x_distance);
-            } else {
-                let x_distance = target_x.saturating_sub(self.cursor_x);
-                self.move_cursor_right(x_distance); 
-            }
-
-            let inverse_op = InsertVisualOp {
-                selection: op.selection,
-                content: removed_content,
-                cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
-                cursor_from: old_pos,
-            };
-
-            Some(inverse_op.into())
+    fn visual_delete(&mut self, op: DeleteVisualOp, ctx: &mut WidgetContext) -> Option<EditOp> {
+        if op.selection.is_empty() {
+            return self.delete_forward();
         }
 
+        let old_pos = Position { line: self.cursor_y, column: self.cursor_x };
+        let (start, end) = selection_absolute_order(&op.selection);
+
+        let content = if start.line == end.line {
+            let code_line = &self.code[start.line];
+
+            if self.position_includes_newline(&end) {
+                let line = format!("{}\n", &code_line[start.column..]);
+                self.code[start.line].replace_range(start.column.., "");
+
+                if ! self.is_last_line(end.line) {
+                    let removed_line = self.code.remove(end.line + 1);
+                    self.code[start.line].push_str(&removed_line);
+                }
+
+                Content::from(line)
+            } else {
+                let content = Content::from(code_line[start.column..=end.column].to_string());
+                self.code[start.line].replace_range(start.column..=end.column, "");
+
+                content
+            }
+        } else {
+            let mut lines = Vec::new(); 
+            let mut current = start;
+            let line = self.code[start.line][start.column..].to_string();
+            self.code[start.line].replace_range(start.column.., "");
+            let first_line = Text::Line(vec![Span::from(line)]);
+            lines.push(first_line);
+
+            current.line += 1;
+            let operating_line = current.line;
+
+            while current.line < end.line {
+                let line = self.code.remove(operating_line);
+                lines.push(Text::Line(vec![Span::from(line)]));
+                current.line += 1;
+            }
+
+            if self.position_includes_newline(&Position { line: operating_line , column: end.column }) {
+                let line = self.code.remove(operating_line);
+                if operating_line < self.code.len() {
+                    let line_to_append = self.code.remove(operating_line);
+                    self.code[start.line].push_str(&line_to_append);
+                }
+                lines.push(Text::Line(vec![Span::from(line)]));
+            } else {
+                let line = self.code[operating_line][..=end.column].to_string();
+                self.code[operating_line].replace_range(..=end.column, "");
+                let line_to_append = self.code.remove(operating_line);
+                self.code[start.line].push_str(&line_to_append);
+                lines.push(Text::Span(Span::from(line)));
+            }
+
+            Content::Lines(lines)
+        };
+
+        ctx.command_queue_tx.push(AppCommand::Log(format!("Deleted content: {content:#?}")));
+
+        let target_pos = Position { line: start.line, column: start.column };
+        self.move_to(target_pos, &ctx.metadata);
+
+        let inverse_op = InsertVisualOp {
+            selection: op.selection,
+            content,
+            cursor_to: Position { line: self.cursor_y, column: self.cursor_x },
+            cursor_from: old_pos,
+        };
+
+        Some(inverse_op.into())
     }
 
 
@@ -577,10 +543,7 @@ impl Editor {
             return;
         }
 
-        let editor_lines = raw_text_to_lines(content);
-        assert!(!editor_lines.is_empty());
-
-        let editor_content = Content::from(editor_lines);
+        let editor_content = Content::from(content);
         let pseudo_selection = self.get_selection_from(&editor_content);
         let (sel_start, sel_end) = selection_absolute_order(&pseudo_selection);
 
@@ -630,7 +593,7 @@ impl Editor {
             // all content on the same line
             let line = &self.code[start.line];
             if line.is_empty() {
-                String::new()
+                String::from("\n")
             } else if end.column == line.len() {
                 // user selected the logical newline (like vim '$')
                 let mut content = line[start.column..end.column].to_string();
@@ -663,7 +626,7 @@ impl Editor {
             let mut joined_lines = lines.join("\n");
 
             let end_line_len = self.code[end.line].len();
-            if end_line_len != 0 && end.column == end_line_len {
+            if end_line_len == 0 || end.column == end_line_len {
                 // user selected the logical newline (like vim '$')
                 joined_lines.push('\n');
             }
@@ -779,43 +742,49 @@ impl Editor {
                 let col = start.column;
 
                 match insert_visual_op.content {
-                    Content::Lines(mut lines) => {
-                        let mut last_line = current_line.split_off(col);
+                    Content::Lines(lines) => {
+                        let last_line = current_line.split_off(col);
+                        let mut lines = lines.into_iter();
 
-                        match lines.cur_line {
-                            StringOrChar::String(ref s) => current_line.push_str(s),
-                            StringOrChar::Char(c) => current_line.push(c),
+                        match lines.next().unwrap() {
+                            Text::Line(spans) => {
+                                for span in spans {
+                                    current_line.push_str(&span.content);
+                                }
+                            }
+                            Text::Span(span) => {
+                                panic!("Unexpected Text::Span in InsertVisual content (the first line) where Text::Line was expected: {span:#?}");
+                            }
                         }
 
-                        let last_line = match lines.last_line {
-                            StringOrChar::String(mut s) => {
-                                if lines.last_line_split {
-                                    s.push_str("\n");
+                        let mut rev_lines = lines.rev();
+                        if let Some(last_insert_line) = rev_lines.next() {
+
+                            match last_insert_line {
+                                Text::Line(spans) => {
+                                    let insert_content: String = spans.into_iter().map(|span| span.content).collect();
+                                    self.code.insert(start.line + 1, last_line);
+                                    self.code.insert(start.line + 1, insert_content);
                                 }
-
-                                s.push_str(&last_line);
-                                s
-                            }
-                            StringOrChar::Char(c) => {
-                                last_line.insert(0, c);
-
-                                if lines.last_line_split {
-                                    last_line.insert(1, '\n');
+                                Text::Span(span) => {
+                                    let last_line = format!("{}{}", span.content, last_line);
+                                    self.code.insert(start.line + 1, last_line);
                                 }
-
-                                last_line
                             }
-                        };
 
-                        let mut last_lines = last_line.split('\n').collect::<Vec<_>>();
-                        while let Some(line) = last_lines.pop() {
-                            self.code.insert(start.line + 1, line.to_string());
-                        }
-
-                        // self.code.insert(start.line + 1, last_line);
-
-                        while let Some(line) = lines.new_lines.pop() {
-                            self.code.insert(start.line + 1, line);
+                            for line in rev_lines {
+                                match line {
+                                    Text::Line(spans) => {
+                                        let insert_content: String = spans.into_iter().map(|span| span.content).collect();
+                                        self.code.insert(start.line + 1, insert_content);
+                                    }
+                                    Text::Span(span) => {
+                                        panic!("Unexpected Text::Span in InsertVisual content (the middle splice) where Text::Line was expected: {span:#?}");
+                                    }
+                                }
+                            }
+                        } else {
+                            self.code.insert(start.line + 1, last_line);
                         }
                     }
                     Content::StringOrChar(StringOrChar::String(s)) => {
@@ -1018,14 +987,17 @@ impl Editor {
             }
             KeyCode::Char('p') => {
                 if self.content_register.is_none() {
+                    ctx.command_queue_tx.push(AppCommand::Log("Nothing in register to paste".to_string()));
                     return;
                 }
 
-                let content = self.content_register.as_ref().unwrap().clone(); 
-                let content_lines = raw_text_to_lines(content.clone());
-                let editor_content = Content::from(content_lines);
+                let string_content = self.content_register.as_ref().unwrap().clone(); 
+                ctx.command_queue_tx.push(AppCommand::Log(format!("pre-conversion content: {string_content:?}")));
+                let editor_content = Content::from(string_content);
+                ctx.command_queue_tx.push(AppCommand::Log(format!("Pasting from register content: {editor_content:?}")));
 
                 let pseudo_selection = self.get_selection_from(&editor_content);
+                ctx.command_queue_tx.push(AppCommand::Log(format!("Pseudo selection for paste: {pseudo_selection:#?}")));
                 let (sel_start, _sel_end) = selection_absolute_order(&pseudo_selection);
 
                 let insert_op = InsertVisualOp {
@@ -1356,31 +1328,14 @@ impl Editor {
                 }
             }
             Content::Lines(lines) => {
-                let mut new_lines_count = 1 + lines.new_lines.len();
-
-                if lines.last_line_split {
-                    new_lines_count += 1;
-                }
-
-                let mut end_line = cursor.line + new_lines_count;
-                let end_col = if lines.last_line_split {
-                    0
-                } else {
-                    // selection is inclusive
-                    match lines.last_line {
-                        StringOrChar::String(ref s) => {
-                            if s.is_empty() {
-                                let last_new_line_len = lines.new_lines.last().map(|l| l.len());
-                                end_line -= 1;
-                                last_new_line_len.unwrap_or(lines.cur_line.len())
-                            } else {
-                                s.len().saturating_sub(1)
-                            }
-                        },
-                        StringOrChar::Char(_) => 0,
-                    }
+                let line_count = lines.iter().filter(|line| matches!(line, Text::Line(_))).count() - 1;
+                let last_line_len = match lines.last().unwrap() {
+                    Text::Span(s) => s.content.len().saturating_sub(1),
+                    Text::Line(spans) => spans.iter().map(|span| span.content.len()).sum(), // the full line + implied newline
                 };
 
+                let end_line = cursor.line + line_count;
+                let end_col = last_line_len;
                 VisualSelection { anchor: cursor, cursor: Position { line: end_line, column: end_col } }
             }
         }
@@ -1573,18 +1528,6 @@ fn digits_in(n: u64) -> u32 {
     }
 }
 
-/// Converts a "normal" string (e.g. from a file or clipboard) into a collection of lines.
-/// 
-/// Carriage returns are stripped iff they're part of the newline (\r\n), and final newline is
-/// preserved if it exists (unlike str::lines()).
-fn raw_text_to_lines(text: String) -> Vec<String> {
-    text.split('\n')
-        .into_iter()
-        .map(|s| s.strip_suffix('\r').unwrap_or(s))
-        .map(String::from)
-        .collect()
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct VisualSelection {
     anchor: Position,
@@ -1638,55 +1581,59 @@ impl fmt::Display for StringOrChar {
 }
 
 #[derive(Clone, Debug)]
-struct Lines {
-    cur_line: StringOrChar,
-    new_lines: Vec<String>,
-    last_line: StringOrChar,
-    last_line_split: bool,
+enum Text {
+    /// A string of text terminated with a newline
+    Line(Vec<Span>),
+    /// A string of text that does not end with a newline
+    Span(Span),
+}
+
+#[derive(Clone, Debug)]
+struct Span {
+    content: String,
+}
+impl From<&str> for Span {
+    fn from(s: &str) -> Self {
+        Span::from(s.to_string())
+    }
+}
+impl From<String> for Span {
+    fn from(s: String) -> Self {
+        Span { content: s }
+    }
 }
 
 #[derive(Clone, Debug)]
 enum Content {
     StringOrChar(StringOrChar),
-    Lines(Lines),
-}
-impl From<Vec<String>> for Content {
-    fn from(mut content: Vec<String>) -> Self {
-        // we control this
-        assert!(!content.is_empty(), "Content must be non-empty");
-
-        if content.len() == 1 {
-            return Self::StringOrChar(StringOrChar::String(content.pop().unwrap()));
-        }
-
-        // else we know we have at least two lines
-
-        let first_line = content.remove(0);
-        let last_line = content.pop().unwrap();
-
-        let lines = Lines {
-            cur_line: first_line.into(),
-            new_lines: content,
-            last_line: last_line.into(),
-            last_line_split: false,
-        };
-
-        Self::Lines(lines)
-    }
+    Lines(Vec<Text>),
 }
 impl From<String> for Content {
     fn from(s: String) -> Self {
-        Self::StringOrChar(s.into())
+        let mut multiline = false;
+        let mut text_content = s.split_inclusive('\n')
+            .into_iter()
+            .map(|s| if s.ends_with('\n') {
+                multiline = true;
+                let stripped = strip_rn(s);
+                Text::Line(vec![Span::from(stripped)])
+            } else {
+                Text::Span(Span::from(s))
+            })
+            .collect::<Vec<_>>();
+
+        if multiline {
+            Content::Lines(text_content)
+        } else {
+            let content = text_content.pop().unwrap();
+            let Text::Span(span) = content else { panic!("Expected span since we asserted ! multiline") };
+            Content::StringOrChar(span.content.into())
+        }
     }
 }
 impl From<char> for Content {
     fn from(c: char) -> Self {
         Self::StringOrChar(c.into())
-    }
-}
-impl From<Lines> for Content {
-    fn from(lines_insert: Lines) -> Self {
-        Self::Lines(lines_insert)
     }
 }
 impl fmt::Display for Content {
@@ -1695,17 +1642,40 @@ impl fmt::Display for Content {
             Content::StringOrChar(StringOrChar::String(s)) => write!(f, "{s}"),
             Content::StringOrChar(StringOrChar::Char(c)) => write!(f, "{c}"),
             Content::Lines(lines) => {
-                writeln!(f, "{}", lines.cur_line)?;
-                for new_line in &lines.new_lines {
-                    writeln!(f, "{new_line}")?;
+                let mut s = String::new();
+
+                for text in lines.iter() {
+                    match text {
+                        Text::Span(span) => s.push_str(&span.content),
+                        Text::Line(spans) => {
+                            for span in spans.iter() {
+                                s.push_str(&span.content);
+                            }
+                            s.push('\n');
+                        },
+                    }
                 }
 
-                if lines.last_line_split {
-                    writeln!(f, "{}", lines.last_line)
-                } else {
-                    write!(f, "{}", lines.last_line)
-                }
+                write!(f, "{s}")
             }
         }
     }
+}
+
+fn strip_rn(s: &str) -> &str {
+    let s = s.strip_suffix('\n').unwrap_or(s);
+    let s = s.strip_suffix('\r').unwrap_or(s);
+    s 
+}
+
+/// Converts a "normal" string (e.g. from a file or clipboard) into a collection of lines.
+/// 
+/// Carriage returns are stripped iff they're part of the newline (\r\n), and final newline is
+/// preserved if it exists (unlike str::lines()).
+fn raw_text_to_lines(text: String) -> Vec<String> {
+    text.split('\n')
+        .into_iter()
+        .map(|s| s.strip_suffix('\r').unwrap_or(s))
+        .map(String::from)
+        .collect()
 }
