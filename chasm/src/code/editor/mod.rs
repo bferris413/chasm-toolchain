@@ -377,8 +377,6 @@ impl Editor {
             Content::Lines(lines)
         };
 
-        ctx.command_queue_tx.push(AppCommand::Log(format!("Deleted content: {content:#?}")));
-
         let target_pos = Position { line: start.line, column: start.column };
         self.move_to(target_pos, &ctx.metadata);
 
@@ -542,16 +540,15 @@ impl Editor {
 
     fn paste_from_clipboard(&mut self, ctx: &mut WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
-            let msg = format!("Can't access clipboard for paste: {}", self.clipboard.as_ref().err().unwrap());
-            ctx.command_queue_tx.push(AppCommand::Log(msg));
+            let cberr = self.clipboard.as_ref().err().unwrap();
+            ctx.log(format!("Can't access clipboard for paste: {cberr}"));
             return;
         };
         
         let content = match clipboard.get_text() {
             Ok(text) => text,
             Err(e) => {
-                let msg = format!("Failed to get clipboard text for paste: {e}");
-                ctx.command_queue_tx.push(AppCommand::Log(msg));
+                ctx.log(format!("Failed to get clipboard text for paste: {e}"));
                 return;
             }
         };
@@ -581,15 +578,10 @@ impl Editor {
         // TODO: this converts the selection to String content. We'd rather have the original `Content` type,
         // but creating it is complected in `fn visual_delete` so we're just using this for now
         let content = self.get_selection_content(selection);
-        let msg = format!("Selection content: {content:?}");
-        ctx.command_queue_tx.push(AppCommand::Log(msg));
 
         if content.is_empty() {
             return;
         }
-
-        let msg = format!("Copied {} bytes to register", content.len());
-        ctx.command_queue_tx.push(AppCommand::Log(msg));
 
         self.content_register = Some(content);
     }
@@ -656,14 +648,13 @@ impl Editor {
 
     fn set_clipboard_text(&mut self, text: String, ctx: &mut WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
-            let msg = format!("Can't access clipboard for cut/copy: {}", self.clipboard.as_ref().err().unwrap());
-            ctx.command_queue_tx.push(AppCommand::Log(msg));
+            let cberr = self.clipboard.as_ref().err().unwrap();
+            ctx.log(format!("Can't access clipboard for cut/copy: {cberr}"));
             return;
         };
 
         if let Err(e) = clipboard.set_text(text) {
-            let msg = format!("Failed to set clipboard text during cut/copy: {e}");
-            ctx.command_queue_tx.push(AppCommand::Log(msg));
+            ctx.log(format!("Failed to set clipboard text during cut/copy: {e}"));
         }
     }
 
@@ -672,8 +663,7 @@ impl Editor {
         let file = match File::create(&path) {
             Ok(f) => f,
             Err(e) => {
-                let msg = format!("Failed to save file {}: {}", path.display(), e);
-                ctx.command_queue_tx.push(AppCommand::Log(msg));
+                ctx.log(format!("Failed to save file {}: {e}", path.display()));
                 return;
             }
         };
@@ -683,15 +673,13 @@ impl Editor {
         let nlines = self.code.len();
         for (i, line) in self.code.iter().enumerate() {
             if let Err(e) = writer.write_all(line.as_bytes()) {
-                let msg = format!("Failed to write to file {}: {}", path.display(), e);
-                ctx.command_queue_tx.push(AppCommand::Log(msg));
+                ctx.log(format!("Failed to write to file {}: {e}", path.display()));
                 return;
             }
 
             if i != nlines - 1 {
                 if let Err(e) = writer.write_all(b"\n") {
-                    let msg = format!("Failed to write to file {}: {}", path.display(), e);
-                    ctx.command_queue_tx.push(AppCommand::Log(msg));
+                    ctx.log(format!("Failed to write to file {}: {e}", path.display()));
                     return;
                 }
             }
@@ -700,8 +688,6 @@ impl Editor {
 
     /// Applies the edit operation and returns the inverse *if* something was performed.
     fn apply(&mut self, op: EditOp, ctx: &mut WidgetContext) -> Option<EditOp> {
-        let msg = format!("Applying edit op: {op:#?}");
-        ctx.command_queue_tx.push(AppCommand::Log(msg));
         match op {
             EditOp::Insert(insert_op) => {
                 let inverse_op = insert_op.clone().invert();
@@ -1003,25 +989,19 @@ impl Editor {
             }
             KeyCode::Char('y') => {
                 if let Some(selection) = self.active_selection.take() {
-                    let msg = format!("yanked selection: {:?}", selection);
-                    ctx.command_queue_tx.push(AppCommand::Log(msg));
                     self.copy_selection_to_register(&selection, ctx);
                     self.move_to(selection.anchor, &ctx.metadata);
                 }
             }
             KeyCode::Char('p') => {
                 if self.content_register.is_none() {
-                    ctx.command_queue_tx.push(AppCommand::Log("Nothing in register to paste".to_string()));
                     return;
                 }
 
                 let string_content = self.content_register.as_ref().unwrap().clone(); 
-                ctx.command_queue_tx.push(AppCommand::Log(format!("pre-conversion content: {string_content:?}")));
                 let editor_content = Content::from(string_content);
-                ctx.command_queue_tx.push(AppCommand::Log(format!("Pasting from register content: {editor_content:?}")));
 
                 let pseudo_selection = self.get_selection_from(&editor_content);
-                ctx.command_queue_tx.push(AppCommand::Log(format!("Pseudo selection for paste: {pseudo_selection:#?}")));
                 let (sel_start, _sel_end) = selection_absolute_order(&pseudo_selection);
 
                 let insert_op = InsertVisualOp {
@@ -1138,8 +1118,6 @@ impl Editor {
                     self.move_cursor_up(move_size, &ctx.metadata);
                 } else {
                     if let Some(op) = self.undo_redo.undo() {
-                        let msg = format!("Undoing op: {op:#?}");
-                        ctx.command_queue_tx.push(AppCommand::Log(msg));
                         self.apply(op, ctx);
                     }
                 }
@@ -1216,8 +1194,7 @@ impl Editor {
             }
             _other => {
                 // currently unbound
-                let msg = format!("Unbound key in normal mode: {key_event:#?}");
-                ctx.command_queue_tx.push(AppCommand::Log(msg));
+                ctx.log(format!("Unbound key in normal mode: {key_event:#?}"));
             }
         };
 
@@ -1331,8 +1308,7 @@ impl Editor {
                 self.undo_redo.push(undo_op);
             }
             _other => {
-                let msg = format!("Unbound key in insert mode: {key_event:#?}");
-                ctx.command_queue_tx.push(AppCommand::Log(msg));
+                ctx.log(format!("Unbound key in insert mode: {key_event:#?}"));
             }
         }
     }

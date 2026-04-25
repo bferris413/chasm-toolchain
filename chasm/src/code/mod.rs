@@ -45,6 +45,11 @@ struct WidgetContext<'a> {
     metadata: &'a Metadata,
     command_queue_tx: CommandQueueTx<'a>,
 }
+impl<'a> WidgetContext<'a> {
+    fn log(&mut self, message: String) {
+        self.command_queue_tx.push(AppCommand::Log(message));
+    }
+}
 
 struct AppContext {
     metadata: Metadata,
