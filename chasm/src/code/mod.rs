@@ -51,6 +51,17 @@ struct AppContext {
     command_queue: CommandQueue,
 }
 impl AppContext {
+    #[cfg(test)]
+    fn new_test() -> Self {
+        Self {
+            metadata: Metadata {
+                status_area: StatusArea(Rect::new(100, 100, 100, 100)),
+                view_area: ViewArea(Rect::new(100, 100, 100, 100)),
+            },
+            command_queue: CommandQueue::new(),
+        }
+    }
+
     fn widget_context<'a>(&'a mut self) -> WidgetContext<'a> {
         WidgetContext {
             metadata: &self.metadata,

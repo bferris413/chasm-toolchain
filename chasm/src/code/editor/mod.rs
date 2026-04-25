@@ -106,6 +106,23 @@ impl Editor {
         }
     }
 
+    #[cfg(test)]
+    fn new_test() -> Self {
+        Editor {
+            mod_or_file: ModuleOrFile::File(PathBuf::new()),
+            code: Vec::new(),
+            cursor_x: 0,
+            cursor_y: 0,
+            last_requested_x: 0,
+            scroll_y: 0,
+            mode: EditorMode::Normal,
+            active_selection: None,
+            content_register: None,
+            undo_redo: UndoRedoStack::new(),
+            clipboard: Err(arboard::Error::ContentNotAvailable), // default to empty clipboard
+        }
+    }
+
     fn snap_view_to_cursor(&mut self, meta: &Metadata) {
         let view_height = meta.view_area.0.height as usize;
         if self.cursor_y > self.scroll_y + view_height - 1 {
@@ -1678,4 +1695,133 @@ fn raw_text_to_lines(text: String) -> Vec<String> {
         .map(|s| s.strip_suffix('\r').unwrap_or(s))
         .map(String::from)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyEventKind, KeyEventState};
+
+    use crate::code::AppContext;
+
+    use super::*;
+
+    fn keypress_event(c: char, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE
+        })
+    }
+
+    fn apply_sequence(seq: &str, editor: &mut Editor, ctx: &mut WidgetContext) {
+        for c in seq.chars() {
+            let event = keypress_event(c, KeyModifiers::empty());
+            editor.handle_event(&event, ctx);
+        }
+    }
+
+    #[test]
+    fn editor_text_to_lines_includes_preceding_and_trailing_newlines() {
+        let text = "\r\nline1\r\nline2\r\nline3\r\n".to_string();
+
+        let lines = raw_text_to_lines(text);
+
+        assert_eq!(lines, vec!["", "line1", "line2", "line3", ""]);
+    }
+
+    #[test]
+    fn editor_v_sets_to_visual_mode() {
+        let mut editor = Editor::new_test();
+        let mut app_ctx = AppContext::new_test();
+        let exp_selection = VisualSelection {
+            anchor: Position { line: 0, column: 0},
+            cursor: Position { line: 0, column: 0},
+        };
+
+        apply_sequence("v", &mut editor, &mut app_ctx.widget_context());
+
+        assert!(editor.active_selection.is_some());
+        assert_eq!(editor.active_selection.unwrap(), exp_selection);
+    }
+
+    #[test]
+    fn editor_visual_delete_on_empty_line_removes_first_newline() {
+        let mut editor = Editor::new_test();
+        let code = vec!["".to_string(), "line1".to_string(), "line2".to_string()];
+        let exp_code = vec!["line1".to_string(), "line2".to_string()];
+        editor.code = code;
+        editor.cursor_x = 0;
+        editor.cursor_y = 0;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("vd", &mut editor, &mut app_ctx.widget_context());
+
+        assert_eq!(editor.code, exp_code);
+    }
+
+    #[test]
+    fn editor_visual_delete_entire_line_removes_line() {
+        let mut editor = Editor::new_test();
+        let code = vec!["line1".to_string(), "line2".to_string()];
+        let exp_code = vec!["line2".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("v$d", &mut editor, &mut app_ctx.widget_context());
+
+        assert_eq!(editor.code, exp_code);
+    }
+
+    #[test]
+    fn editor_visual_delete_range_removes_range() {
+        let mut editor = Editor::new_test();
+        let code = vec!["line1".to_string()];
+        let exp_code = vec!["l1".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("lvlld", &mut editor, &mut app_ctx.widget_context());
+
+        assert_eq!(editor.code, exp_code);
+    }
+ 
+    #[test]
+    fn editor_visual_delete_including_newline_removes_newline() {
+        let mut editor = Editor::new_test();
+        let code = vec!["line1".to_string(), "line2".to_string()];
+        let exp_code = vec!["linline2".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("lllv$d", &mut editor, &mut app_ctx.widget_context());
+
+        assert_eq!(editor.code, exp_code);
+    } 
+ 
+    #[test]
+    fn editor_visual_delete_to_next_line_concats_lines() {
+        let mut editor = Editor::new_test();
+        let code = vec!["line1".to_string(), "line2".to_string()];
+        let exp_code = vec!["linne2".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("lllv0jld", &mut editor, &mut app_ctx.widget_context());
+
+        assert_eq!(editor.code, exp_code);
+    } 
+ 
+    #[test]
+    fn editor_visual_delete_including_next_line_newline_deletes_last_line() {
+        let mut editor = Editor::new_test();
+        let code = vec!["line1".to_string(), "line2".to_string(), "line3".to_string()];
+        let exp_code = vec!["liline3".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("llvj$d", &mut editor, &mut app_ctx.widget_context());
+
+        assert_eq!(editor.code, exp_code);
+    } 
 }
