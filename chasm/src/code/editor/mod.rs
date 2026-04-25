@@ -914,6 +914,11 @@ impl Editor {
             }
             KeyCode::Char('x') => {
                 if let Some(selection) = self.active_selection.take() {
+                    if !key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                        // overwrite the register only if we're not copying to clipboard
+                        self.copy_selection_to_register(&selection, ctx);
+                    }
+
                     let visual_delete_op = DeleteVisualOp {
                         selection,
                         deleted: None,
@@ -951,6 +956,8 @@ impl Editor {
                     let move_size = (ctx.metadata.view_area.0.height as usize).saturating_sub(1);
                     self.move_cursor_down(move_size, &ctx.metadata);
                 } else if let Some(selection) = self.active_selection.take() {
+                    self.copy_selection_to_register(&selection, ctx);
+
                     let visual_delete = DeleteVisualOp {
                         selection,
                         deleted: None,
@@ -1035,6 +1042,7 @@ impl Editor {
                 } else if let Some(selection) = self.active_selection.take() {
                     // visual delete and enter insert mode
 
+                    self.copy_selection_to_register(&selection, ctx);
                     let visual_delete = DeleteVisualOp {
                         selection,
                         deleted: None,
@@ -1884,5 +1892,70 @@ mod tests {
 
         let string_content = editor.content_register.as_ref().unwrap();
         assert_eq!(string_content, "line1\nline2\n");
+    }
+
+    #[test]
+    fn editor_visual_delete_with_s_yanks_and_puts_in_insert_mode() {
+        let mut editor = Editor::new_test();
+        let code = vec!["line1".to_string()];
+        let exp_code = vec!["l1".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("lvlls", &mut editor, &mut app_ctx.widget_context());
+
+        assert!(editor.content_register.is_some(), "Expected register content after 's' command");
+        let string_content = editor.content_register.as_ref().unwrap();
+        assert_eq!(string_content, "ine");
+        assert_eq!(editor.mode, EditorMode::Insert);
+        assert_eq!(editor.code, exp_code);
+        assert_eq!(editor.cursor_x, 1);
+        assert_eq!(editor.cursor_y, 0);
+    }
+
+    #[test]
+    fn editor_visual_delete_with_x_yanks_and_deletes() {
+        let mut editor = Editor::new_test();
+        let code = vec![
+            "line1".to_string(),
+            "line2".to_string(),
+        ];
+        let exp_code = vec!["2".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("vj$hhx", &mut editor, &mut app_ctx.widget_context());
+
+        assert!(editor.content_register.is_some(), "Expected register content after 'x' command");
+        let string_content = editor.content_register.as_ref().unwrap();
+        assert_eq!(string_content, "line1\nline");
+        assert_eq!(editor.code, exp_code);
+        assert_eq!(editor.cursor_x, 0);
+        assert_eq!(editor.cursor_y, 0);
+    }
+
+    #[test]
+    fn editor_visual_delete_with_d_yanks_and_deletes() {
+        let mut editor = Editor::new_test();
+        let code = vec![
+            "line1".to_string(),
+            "line2".to_string(),
+            "line3".to_string(),
+        ];
+        let exp_code = vec![
+            "line1".to_string(),
+            "line3".to_string(),
+        ];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("jv$d", &mut editor, &mut app_ctx.widget_context());
+
+        assert!(editor.content_register.is_some(), "Expected register content after 'd' command");
+        let string_content = editor.content_register.as_ref().unwrap();
+        assert_eq!(string_content, "line2\n");
+        assert_eq!(editor.code, exp_code);
+        assert_eq!(editor.cursor_x, 0);
+        assert_eq!(editor.cursor_y, 1);
     }
 }
