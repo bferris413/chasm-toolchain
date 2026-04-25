@@ -1824,4 +1824,65 @@ mod tests {
 
         assert_eq!(editor.code, exp_code);
     } 
+ 
+    #[test]
+    fn editor_visual_yank_works_on_single_line_ranges() {
+        let mut editor = Editor::new_test();
+        let code = vec!["line1".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("lvlly", &mut editor, &mut app_ctx.widget_context());
+
+        let string_content = editor.content_register.as_ref().unwrap();
+        assert_eq!(string_content, "ine");
+    } 
+ 
+    #[test]
+    fn editor_visual_yank_works_on_empty_ranges() {
+        let mut editor = Editor::new_test();
+        let code = vec!["line1".to_string()];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("vy", &mut editor, &mut app_ctx.widget_context());
+
+        let string_content = editor.content_register.as_ref().unwrap();
+        assert_eq!(string_content, "l");
+    } 
+ 
+    #[test]
+    fn editor_visual_yank_works_on_multi_line_ranges_ending_with_empty_newline() {
+        let mut editor = Editor::new_test();
+        let code = vec![
+            "line1".to_string(),
+            "line2".to_string(),
+            "".to_string(),
+            "line3".to_string()
+        ];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("lvjjy", &mut editor, &mut app_ctx.widget_context());
+
+        let string_content = editor.content_register.as_ref().unwrap();
+        assert_eq!(string_content, "ine1\nline2\n\n");
+    }
+  
+    #[test]
+    fn editor_visual_yank_works_on_multi_line_ranges_ending_with_newline() {
+        let mut editor = Editor::new_test();
+        let code = vec![
+            "line1".to_string(),
+            "line2".to_string(),
+            "line3".to_string()
+        ];
+        editor.code = code;
+        let mut app_ctx = AppContext::new_test();
+
+        apply_sequence("vj$y", &mut editor, &mut app_ctx.widget_context());
+
+        let string_content = editor.content_register.as_ref().unwrap();
+        assert_eq!(string_content, "line1\nline2\n");
+    }
 }
