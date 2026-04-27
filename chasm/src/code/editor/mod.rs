@@ -984,6 +984,17 @@ impl Editor {
                     self.move_to(match_pos, &ctx.metadata);
                 }
             }
+            KeyCode::Char('N') => {
+                if self.code.is_empty() {
+                    return;
+                }
+
+                let from_pos = Position { line: self.cursor_y, column: self.cursor_x };
+
+                if let Some(match_pos) = self.search.next_match_back(from_pos, &self.code) {
+                    self.move_to(match_pos, &ctx.metadata);
+                }
+            }
             KeyCode::Char('I') => {
                 self.cursor_x = 0;
                 self.skip_x_whitespace_forward();

@@ -96,6 +96,48 @@ impl Search {
 
         None
     }
+    pub fn next_match_back(&self, from_pos: Position, code: &[String]) -> Option<Position> {
+        if self.last_search_term.is_empty() {
+            return None;
+        }
+
+        for line_no in (0..=from_pos.line).rev() {
+            let line = &code[line_no];
+            if line.is_empty() {
+                continue;
+            }
+
+            let search_end_col = if line_no == from_pos.line {
+                from_pos.column
+            } else {
+                line.len()
+            };
+
+            if let Some(col) = line[..search_end_col].rfind(&self.last_search_term) {
+                return Some(Position { line: line_no, column: col });
+            }
+        }
+
+        // didn't find it but we'll wrap around and try up to the starting position
+        for line_no in (from_pos.line..code.len()).rev() {
+            let line = &code[line_no];
+            if line.is_empty() {
+                continue;
+            }
+
+            let search_start_col = if line_no == from_pos.line {
+                from_pos.column
+            } else {
+                0
+            };
+
+            if let Some(col) = line[search_start_col..].rfind(&self.last_search_term) {
+                return Some(Position { line: line_no, column: search_start_col + col });
+            }
+        }
+
+        None
+    }
 }
 
 pub (super) struct SearchInput<'a> {
