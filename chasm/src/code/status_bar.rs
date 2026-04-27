@@ -6,25 +6,38 @@ use std::fmt::Write;
 
 use crossterm::event::{Event, KeyEventKind};
 use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Block, Paragraph, Widget, WidgetRef}
+    buffer::Buffer, layout::Rect, style::{Color, Style}, text::{Line, Span}, widgets::{Block, Paragraph, Widget, WidgetRef}
 };
 
 use crate::code::{ChasmWidget, WidgetContext};
 
 #[derive(Debug)]
 pub (super) struct StatusBar {
+    title: &'static str,
     event_text: String,
+    event_max_len: usize,
+    search_text: String,
+    search_max_len: usize,
 }
 impl StatusBar {
     pub fn new() -> Self {
+        let event_len = 15;
+        let search_len = 40;
+        let title = " Chasm Editor";
+
         Self {
-            event_text: String::new(),
+            title,
+            event_text: String::with_capacity(event_len),
+            event_max_len: event_len,
+            search_text: String::with_capacity(search_len),
+            search_max_len: search_len,
          }
      }
+     
+    pub(crate) fn set_search_input(&mut self, input: String) {
+        self.search_text.clear();
+        write!(&mut self.search_text, "{input}").unwrap();
+    }
 }
 impl ChasmWidget for StatusBar {
     fn handle_event(&mut self, event: &Event, _ctx: &mut WidgetContext) {
@@ -36,27 +49,34 @@ impl ChasmWidget for StatusBar {
                 } else {
                     format!("{}+", key_event.modifiers)
                 };
-                write!(&mut self.event_text, "<pressed {modifier}{}>", key_event.code).unwrap();
+                write!(&mut self.event_text, "{modifier}{}", key_event.code).unwrap();
             }
             other => {
                 self.event_text.clear();
-                write!(&mut self.event_text, "<event {:?}>", other).unwrap();
+                write!(&mut self.event_text, "{:?}", other).unwrap();
             }
         };
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let title = "Chasm Editor";
-        let block = Block::default().style(Style::new().bg(Color::LightCyan).fg(Color::Black));
-        let text = Line::from(vec![
-            Span::styled(title, Style::new().bold()),
+        let block = Block::default().style(
+            Style::new().bg(Color::LightCyan).fg(Color::Black)
+        );
+
+        let event_text = &self.event_text[..(self.event_max_len.min(self.event_text.len()))];
+        let search_text = &self.search_text[..(self.search_max_len.min(self.search_text.len()))];
+
+        let line = Line::from(vec![
+            Span::styled(self.title, Style::new().bold()),
             Span::raw(" - "),
-            Span::raw(&self.event_text),
+            Span::raw(format!("{event_text:event_len$}", event_len = self.event_max_len)),
+            Span::raw(" "),
+            Span::raw(format!("{search_text:search_len$}", search_len = self.search_max_len)),
         ]);
 
-        Paragraph::new(text)
+        Paragraph::new(line)
             .block(block)
-            .render(area, buf);
+            .render(area, buf)
     }
 }
 impl WidgetRef for StatusBar {

@@ -44,8 +44,14 @@ impl Search {
         self.deactivate();
     }
     
-    pub(crate) fn pop(&mut self) -> Option<char> {
+    pub fn pop(&mut self) -> Option<char> {
         self.input.pop()
+    }
+    pub fn input<'a>(&'a self) -> SearchInput<'a> {
+        SearchInput { 
+            prefix: "/",
+            input: &self.input,
+        }
     }
 
     pub fn next_match_fwd(&self, from_pos: Position, code: &[String]) -> Option<Position> {
@@ -89,5 +95,20 @@ impl Search {
         }
 
         None
+    }
+}
+
+pub (super) struct SearchInput<'a> {
+    prefix: &'static str,
+    input: &'a str,
+}
+impl SearchInput<'_> {
+    pub fn user_input(&self) -> &str {
+        self.input
+    }
+}
+impl std::fmt::Display for SearchInput<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.prefix, self.input)
     }
 }

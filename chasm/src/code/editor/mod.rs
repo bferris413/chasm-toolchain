@@ -17,7 +17,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
 use crate::code::editor::ops::DeleteXOp;
-use crate::code::{ChasmWidget, Metadata, WidgetContext};
+use crate::code::{AppCommand, ChasmWidget, Metadata, WidgetContext};
 use crate::project::ModulePath;
 use ops::{DeleteBackOp, DeleteForwardOp, DeleteVisualOp, EditOp, InsertLineOp, InsertOp, InsertSingleOp, InsertVisualOp, SplitOp};
 use undo_redo::UndoRedoStack;
@@ -902,15 +902,42 @@ impl Editor {
         match key_event.code {
             KeyCode::Esc => {
                 self.search.deactivate();
+                ctx.command_queue_tx.push(AppCommand::SearchStatus(String::new()));
             }
             KeyCode::Enter => {
+                let input = self.search.input();
+                let user_input = input.user_input();
+
+                let matches_display = if user_input.is_empty() {
+                    String::new()
+                } else {
+                    format!("search: {}", user_input)
+                };
+
+                ctx.command_queue_tx.push(AppCommand::SearchStatus(matches_display));
+
                 self.search.store();
+
+                // rest duplicated in normal 'n'
+                if self.code.is_empty() {
+                    return;
+                }
+
+                let from_pos = self.get_search_pos_after_cursor();
+
+                if let Some(match_pos) = self.search.next_match_fwd(from_pos, &self.code) {
+                    self.move_to(match_pos, &ctx.metadata);
+                }
             }
             KeyCode::Char(c) => {
                 self.search.push(c);
+                let search_string_w_prefix = self.search.input().to_string();
+                ctx.command_queue_tx.push(AppCommand::SearchStatus(search_string_w_prefix));
             }
             KeyCode::Backspace => {
                 self.search.pop();
+                let search_string_w_prefix = self.search.input().to_string();
+                ctx.command_queue_tx.push(AppCommand::SearchStatus(search_string_w_prefix));
             }
             _ => { /* Nothing */ }
         }
@@ -928,6 +955,8 @@ impl Editor {
             }
             KeyCode::Char('/') => {
                 self.search.activate();
+                let input = self.search.input().to_string();
+                ctx.command_queue_tx.push(AppCommand::SearchStatus(input));
             }
             KeyCode::Char('G') => {
                 let target_line = self.code.len().saturating_sub(1);
