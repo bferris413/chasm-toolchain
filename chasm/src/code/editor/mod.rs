@@ -1,4 +1,5 @@
 mod ops;
+mod search;
 mod undo_redo;
 
 use std::{fmt, vec};
@@ -16,10 +17,11 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
 use crate::code::editor::ops::DeleteXOp;
-use crate::code::{AppCommand, ChasmWidget, Metadata, WidgetContext};
+use crate::code::{ChasmWidget, Metadata, WidgetContext};
 use crate::project::ModulePath;
 use ops::{DeleteBackOp, DeleteForwardOp, DeleteVisualOp, EditOp, InsertLineOp, InsertOp, InsertSingleOp, InsertVisualOp, SplitOp};
 use undo_redo::UndoRedoStack;
+use search::Search;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum EditorMode {
@@ -55,6 +57,7 @@ pub (super) struct Editor {
     last_requested_x: usize,
     active_selection: Option<VisualSelection>,
 
+    search: Search,
     undo_redo: UndoRedoStack,
     clipboard: Result<Clipboard, arboard::Error>,
 
@@ -100,6 +103,7 @@ impl Editor {
             cursor_x: 0,
             last_requested_x: 0,
             active_selection: None,
+            search: Search::new(),
             undo_redo: UndoRedoStack::new(),
             clipboard: Clipboard::new(),
             content_register: None,
@@ -118,6 +122,7 @@ impl Editor {
             mode: EditorMode::Normal,
             active_selection: None,
             content_register: None,
+            search: Search::new(),
             undo_redo: UndoRedoStack::new(),
             clipboard: Err(arboard::Error::ContentNotAvailable), // default to empty clipboard
         }
@@ -390,7 +395,6 @@ impl Editor {
         Some(inverse_op.into())
     }
 
-
     fn skip_until_eol_or(&mut self, pred: fn(char) -> bool) {
         let current_line = &self.code[self.cursor_y];
         let mut chars = current_line.chars().enumerate().skip(self.cursor_x);
@@ -538,6 +542,22 @@ impl Editor {
         self.snap_view_to_cursor(meta);
     }
 
+    fn get_search_pos_after_cursor(&self) -> Position {
+        let mut pos = Position { line: self.cursor_y, column: self.cursor_x };
+
+        if pos.column < self.code[pos.line].len() {
+            pos.column += 1;
+        } else if pos.line < self.code.len() - 1 {
+            pos.line += 1;
+            pos.column = 0;
+        } else {
+            pos.line = 0;
+            pos.column = 0;
+        }
+
+        pos
+    }
+
     fn paste_from_clipboard(&mut self, ctx: &mut WidgetContext) {
         let Ok(clipboard) = self.clipboard.as_mut() else {
             let cberr = self.clipboard.as_ref().err().unwrap();
@@ -574,7 +594,7 @@ impl Editor {
 
     }
 
-    fn copy_selection_to_register(&mut self, selection: &VisualSelection, ctx: &mut WidgetContext) {
+    fn copy_selection_to_register(&mut self, selection: &VisualSelection, _ctx: &mut WidgetContext) {
         // TODO: this converts the selection to String content. We'd rather have the original `Content` type,
         // but creating it is complected in `fn visual_delete` so we're just using this for now
         let content = self.get_selection_content(selection);
@@ -856,19 +876,48 @@ impl Editor {
     }
 
     fn handle_normal_mode_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
-        fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
-            if kev.modifiers == KeyModifiers::CONTROL {
-                (meta.view_area.0.height as usize).saturating_sub(1)
-            } else {
-                1
-            }
-        }
-
         if ! event.is_key_press() {
             return;
         }
 
         let Event::Key(key_event) = event else { unreachable!() };
+
+        if self.search.is_active() {
+            self.handle_normal_mode_search_input(key_event, ctx);
+        } else {
+            self.handle_normal_mode_input(key_event, ctx);
+        }
+
+        let new_cursor_pos = Position { line: self.cursor_y, column: self.cursor_x };
+
+        if self.should_update_visual_selection() {
+            let selection = self.active_selection.as_mut().unwrap();
+            selection.cursor = new_cursor_pos;
+        }
+    }
+
+    fn handle_normal_mode_search_input(&mut self, key_event: &KeyEvent, ctx: &mut WidgetContext) {
+        assert!(self.search.is_active());
+
+        match key_event.code {
+            KeyCode::Esc => {
+                self.search.deactivate();
+            }
+            KeyCode::Enter => {
+                self.search.store();
+            }
+            KeyCode::Char(c) => {
+                self.search.push(c);
+            }
+            KeyCode::Backspace => {
+                self.search.pop();
+            }
+            _ => { /* Nothing */ }
+        }
+    }
+
+    fn handle_normal_mode_input(&mut self, key_event: &KeyEvent, ctx: &mut WidgetContext) {
+        assert!(! self.search.is_active());
 
         match key_event.code {
             KeyCode::Esc => {
@@ -876,6 +925,9 @@ impl Editor {
                     self.active_selection = None;
                     self.clamp_cursor_x();
                 }
+            }
+            KeyCode::Char('/') => {
+                self.search.activate();
             }
             KeyCode::Char('G') => {
                 let target_line = self.code.len().saturating_sub(1);
@@ -891,6 +943,17 @@ impl Editor {
                     self.move_cursor_up(move_len, &ctx.metadata);
                 }
 
+            }
+            KeyCode::Char('n') => {
+                if self.code.is_empty() {
+                    return;
+                }
+
+                let from_pos = self.get_search_pos_after_cursor();
+
+                if let Some(match_pos) = self.search.next_match_fwd(from_pos, &self.code) {
+                    self.move_to(match_pos, &ctx.metadata);
+                }
             }
             KeyCode::Char('I') => {
                 self.cursor_x = 0;
@@ -1197,13 +1260,6 @@ impl Editor {
                 ctx.log(format!("Unbound key in normal mode: {key_event:#?}"));
             }
         };
-
-        let new_cursor_pos = Position { line: self.cursor_y, column: self.cursor_x };
-
-        if self.should_update_visual_selection() {
-            let selection = self.active_selection.as_mut().unwrap();
-            selection.cursor = new_cursor_pos;
-        }
     }
 
     fn handle_insert_mode_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
@@ -1464,6 +1520,15 @@ impl ChasmWidget for Editor {
     }
 }
 
+fn get_vertical_move_distance(kev: &KeyEvent, meta: &Metadata) -> usize {
+    if kev.modifiers == KeyModifiers::CONTROL {
+        (meta.view_area.0.height as usize).saturating_sub(1)
+    } else {
+        1
+    }
+}
+
+
 fn is_word_boundary(chars: &mut Peekable<impl Iterator<Item = (usize, char)>>) -> bool {
     if let Some((_, next_c)) = chars.peek() {
         next_c.is_ascii_whitespace()
@@ -1553,14 +1618,6 @@ struct Position {
 enum StringOrChar {
     String(String),
     Char(char),
-}
-impl StringOrChar {
-    fn len(&self) -> usize {
-        match self {
-            StringOrChar::String(s) => s.len(),
-            StringOrChar::Char(_) => 1,
-        }
-    }
 }
 impl From<String> for StringOrChar {
     fn from(s: String) -> Self {
