@@ -1,34 +1,47 @@
 //! Buffer search functionality.
+//! 
+//! Search direction, forward or backward, is determined by which "mode"
+//! the search was activated in.
 
 use std::mem;
 
 use crate::code::editor::Position;
 
 pub (super) struct Search {
-    is_active: bool,
+    /// The search mode that is currently being input by the user, if any.
+    active_mode: Option<SearchMode>,
     input: String,
-    last_search_term: String,
+    /// The last search input and mode that was stored.
+    last_search: LastSearch,
 }
 
 impl Search {
     pub fn new() -> Self {
         Self {
-            is_active: false,
+            active_mode: None,
             input: String::new(),
-            last_search_term: String::new(),
+            last_search: LastSearch {
+                mode: SearchMode::Forward,
+                input: String::new(),
+            },
         }
     }
 
-    pub fn is_active(&self) -> bool {
-        self.is_active
+    pub fn active_mode(&self) -> Option<SearchMode> {
+        self.active_mode
     }
 
-    pub fn activate(&mut self) {
-        self.is_active = true;
+    pub fn last_mode(&self) -> SearchMode {
+        self.last_search.mode
+    }
+
+    pub fn activate(&mut self, mode: SearchMode) {
+        self.active_mode = Some(mode);
     }
 
     pub fn deactivate(&mut self) {
-        self.is_active = false;
+        self.active_mode = None;
+        self.input.clear();
     }
 
     pub fn push(&mut self, c: char) {
@@ -37,8 +50,8 @@ impl Search {
 
     pub fn store(&mut self) {
         if ! self.input.is_empty() {
-            mem::swap(&mut self.input, &mut self.last_search_term);
-            self.input.clear();
+            mem::swap(&mut self.input, &mut self.last_search.input);
+            self.last_search.mode = self.active_mode.expect("Search is not active");
         }
 
         self.deactivate();
@@ -47,15 +60,37 @@ impl Search {
     pub fn pop(&mut self) -> Option<char> {
         self.input.pop()
     }
-    pub fn input<'a>(&'a self) -> SearchInput<'a> {
+    /// Returns the current search input.
+    /// 
+    /// Panics if search is not active.
+    pub fn current_input<'a>(&'a self) -> SearchInput<'a> {
+        let search_mode = self.active_mode.expect("Search is not active");
+
         SearchInput { 
-            prefix: "/",
             input: &self.input,
+            search_mode,
         }
     }
 
+    /// Search "forward" from the given position based on the last searched mode.
     pub fn next_match_fwd(&self, from_pos: Position, code: &[String]) -> Option<Position> {
-        if self.last_search_term.is_empty() {
+        match self.last_search.mode {
+            SearchMode::Forward => self.search_fwd(from_pos, code),
+            SearchMode::Backward => self.search_back(from_pos, code),
+        }
+    }
+
+    /// Search "backward" from the given position based on the last searched mode.
+    pub fn next_match_back(&self, from_pos: Position, code: &[String]) -> Option<Position> {
+        match self.last_search.mode {
+            SearchMode::Forward => self.search_back(from_pos, code),
+            SearchMode::Backward => self.search_fwd(from_pos, code),
+        }
+
+    }
+
+    fn search_fwd(&self, from_pos: Position, code: &[String]) -> Option<Position> {
+        if self.last_search.input.is_empty() {
             return None;
         }
 
@@ -71,7 +106,7 @@ impl Search {
                 0
             };
 
-            if let Some(col) = line[search_start_col..].find(&self.last_search_term) {
+            if let Some(col) = line[search_start_col..].find(&self.last_search.input) {
                 return Some(Position { line: line_no, column: search_start_col + col });
             }
         }
@@ -89,15 +124,16 @@ impl Search {
                 line.len()
             };
 
-            if let Some(col) = line[..search_end_col].find(&self.last_search_term) {
+            if let Some(col) = line[..search_end_col].find(&self.last_search.input) {
                 return Some(Position { line: line_no, column: col });
             }
         }
 
         None
     }
-    pub fn next_match_back(&self, from_pos: Position, code: &[String]) -> Option<Position> {
-        if self.last_search_term.is_empty() {
+
+    fn search_back(&self, from_pos: Position, code: &[String]) -> Option<Position> {
+        if self.last_search.input.is_empty() {
             return None;
         }
 
@@ -113,7 +149,7 @@ impl Search {
                 line.len()
             };
 
-            if let Some(col) = line[..search_end_col].rfind(&self.last_search_term) {
+            if let Some(col) = line[..search_end_col].rfind(&self.last_search.input) {
                 return Some(Position { line: line_no, column: col });
             }
         }
@@ -131,7 +167,7 @@ impl Search {
                 0
             };
 
-            if let Some(col) = line[search_start_col..].rfind(&self.last_search_term) {
+            if let Some(col) = line[search_start_col..].rfind(&self.last_search.input) {
                 return Some(Position { line: line_no, column: search_start_col + col });
             }
         }
@@ -140,8 +176,23 @@ impl Search {
     }
 }
 
+/// The mode of search, either forward or backward (Vim '/' vs. '?').
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub (super) enum SearchMode {
+    Forward,
+    Backward,
+}
+impl SearchMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SearchMode::Forward => "/",
+            SearchMode::Backward => "?",
+        }
+    }
+}
+
 pub (super) struct SearchInput<'a> {
-    prefix: &'static str,
+    search_mode: SearchMode,
     input: &'a str,
 }
 impl SearchInput<'_> {
@@ -151,6 +202,11 @@ impl SearchInput<'_> {
 }
 impl std::fmt::Display for SearchInput<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", self.prefix, self.input)
+        write!(f, "{}{}", self.search_mode.as_str(), self.input)
     }
+}
+
+struct LastSearch {
+    mode: SearchMode,
+    input: String,
 }

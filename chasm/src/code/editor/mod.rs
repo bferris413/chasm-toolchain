@@ -17,6 +17,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
 use crate::code::editor::ops::DeleteXOp;
+use crate::code::editor::search::SearchMode;
 use crate::code::{AppCommand, ChasmWidget, Metadata, WidgetContext};
 use crate::project::ModulePath;
 use ops::{DeleteBackOp, DeleteForwardOp, DeleteVisualOp, EditOp, InsertLineOp, InsertOp, InsertSingleOp, InsertVisualOp, SplitOp};
@@ -882,7 +883,7 @@ impl Editor {
 
         let Event::Key(key_event) = event else { unreachable!() };
 
-        if self.search.is_active() {
+        if self.search.active_mode().is_some() {
             self.handle_normal_mode_search_input(key_event, ctx);
         } else {
             self.handle_normal_mode_input(key_event, ctx);
@@ -897,7 +898,7 @@ impl Editor {
     }
 
     fn handle_normal_mode_search_input(&mut self, key_event: &KeyEvent, ctx: &mut WidgetContext) {
-        assert!(self.search.is_active());
+        assert!(self.search.active_mode().is_some());
 
         match key_event.code {
             KeyCode::Esc => {
@@ -905,7 +906,7 @@ impl Editor {
                 ctx.command_queue_tx.push(AppCommand::SearchStatus(String::new()));
             }
             KeyCode::Enter => {
-                let input = self.search.input();
+                let input = self.search.current_input();
                 let user_input = input.user_input();
 
                 let matches_display = if user_input.is_empty() {
@@ -931,12 +932,12 @@ impl Editor {
             }
             KeyCode::Char(c) => {
                 self.search.push(c);
-                let search_string_w_prefix = self.search.input().to_string();
+                let search_string_w_prefix = self.search.current_input().to_string();
                 ctx.command_queue_tx.push(AppCommand::SearchStatus(search_string_w_prefix));
             }
             KeyCode::Backspace => {
                 self.search.pop();
-                let search_string_w_prefix = self.search.input().to_string();
+                let search_string_w_prefix = self.search.current_input().to_string();
                 ctx.command_queue_tx.push(AppCommand::SearchStatus(search_string_w_prefix));
             }
             _ => { /* Nothing */ }
@@ -944,7 +945,7 @@ impl Editor {
     }
 
     fn handle_normal_mode_input(&mut self, key_event: &KeyEvent, ctx: &mut WidgetContext) {
-        assert!(! self.search.is_active());
+        assert!(self.search.active_mode().is_none());
 
         match key_event.code {
             KeyCode::Esc => {
@@ -954,8 +955,13 @@ impl Editor {
                 }
             }
             KeyCode::Char('/') => {
-                self.search.activate();
-                let input = self.search.input().to_string();
+                self.search.activate(SearchMode::Forward);
+                let input = self.search.current_input().to_string();
+                ctx.command_queue_tx.push(AppCommand::SearchStatus(input));
+            }
+            KeyCode::Char('?') => {
+                self.search.activate(SearchMode::Backward);
+                let input = self.search.current_input().to_string();
                 ctx.command_queue_tx.push(AppCommand::SearchStatus(input));
             }
             KeyCode::Char('G') => {
@@ -978,7 +984,10 @@ impl Editor {
                     return;
                 }
 
-                let from_pos = self.get_search_pos_after_cursor();
+                let from_pos = match self.search.last_mode() {
+                    SearchMode::Forward => self.get_search_pos_after_cursor(),
+                    SearchMode::Backward => Position { line: self.cursor_y, column: self.cursor_x },
+                };
 
                 if let Some(match_pos) = self.search.next_match_fwd(from_pos, &self.code) {
                     self.move_to(match_pos, &ctx.metadata);
@@ -988,8 +997,10 @@ impl Editor {
                 if self.code.is_empty() {
                     return;
                 }
-
-                let from_pos = Position { line: self.cursor_y, column: self.cursor_x };
+                let from_pos = match self.search.last_mode() {
+                    SearchMode::Forward => Position { line: self.cursor_y, column: self.cursor_x },
+                    SearchMode::Backward => self.get_search_pos_after_cursor(),
+                };
 
                 if let Some(match_pos) = self.search.next_match_back(from_pos, &self.code) {
                     self.move_to(match_pos, &ctx.metadata);
