@@ -68,10 +68,11 @@ impl ChasmWidget for StatusBar {
 
         let line = Line::from(vec![
             Span::styled(self.title, Style::new().bold()),
-            Span::raw(" - "),
-            Span::raw(format!("{event_text:event_len$}", event_len = self.event_max_len)),
-            Span::raw(" "),
+            Span::raw(" | "),
+            Span::raw(format!("{event_text:^event_len$}", event_len = self.event_max_len)),
+            Span::raw(" | "),
             Span::raw(format!("{search_text:search_len$}", search_len = self.search_max_len)),
+            Span::raw(" | "),
         ]);
 
         Paragraph::new(line)
