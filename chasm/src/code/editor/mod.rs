@@ -1,3 +1,4 @@
+mod command;
 mod ops;
 mod search;
 mod undo_redo;
@@ -16,13 +17,14 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
+use crate::code::editor::command::{Command, CommandBuffer};
 use crate::code::editor::ops::DeleteXOp;
 use crate::code::editor::search::SearchMode;
 use crate::code::{AppCommand, ChasmWidget, Metadata, WidgetContext};
 use crate::project::ModulePath;
 use ops::{DeleteBackOp, DeleteForwardOp, DeleteVisualOp, EditOp, InsertLineOp, InsertOp, InsertSingleOp, InsertVisualOp, SplitOp};
 use undo_redo::UndoRedoStack;
-use search::Search;
+use search::SearchBuffer;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum EditorMode {
@@ -58,7 +60,8 @@ pub (super) struct Editor {
     last_requested_x: usize,
     active_selection: Option<VisualSelection>,
 
-    search: Search,
+    command: CommandBuffer,
+    search: SearchBuffer,
     undo_redo: UndoRedoStack,
     clipboard: Result<Clipboard, arboard::Error>,
 
@@ -104,7 +107,8 @@ impl Editor {
             cursor_x: 0,
             last_requested_x: 0,
             active_selection: None,
-            search: Search::new(),
+            command: CommandBuffer::new(),
+            search: SearchBuffer::new(),
             undo_redo: UndoRedoStack::new(),
             clipboard: Clipboard::new(),
             content_register: None,
@@ -113,6 +117,8 @@ impl Editor {
 
     #[cfg(test)]
     fn new_test() -> Self {
+        use crate::code::editor::command::CommandBuffer;
+
         Editor {
             mod_or_file: ModuleOrFile::File(PathBuf::new()),
             code: Vec::new(),
@@ -123,7 +129,8 @@ impl Editor {
             mode: EditorMode::Normal,
             active_selection: None,
             content_register: None,
-            search: Search::new(),
+            search: SearchBuffer::new(),
+            command: CommandBuffer::new(),
             undo_redo: UndoRedoStack::new(),
             clipboard: Err(arboard::Error::ContentNotAvailable), // default to empty clipboard
         }
@@ -885,6 +892,8 @@ impl Editor {
 
         if self.search.active_mode().is_some() {
             self.handle_normal_mode_search_input(key_event, ctx);
+        } else if self.command.is_active() {
+            self.handle_normal_mode_command_input(key_event, ctx);
         } else {
             self.handle_normal_mode_input(key_event, ctx);
         }
@@ -894,6 +903,43 @@ impl Editor {
         if self.should_update_visual_selection() {
             let selection = self.active_selection.as_mut().unwrap();
             selection.cursor = new_cursor_pos;
+        }
+    }
+
+    fn handle_normal_mode_command_input(&mut self, key_event: &KeyEvent, ctx: &mut WidgetContext) {
+        assert!(self.command.is_active());
+
+        match key_event.code {
+            KeyCode::Esc => {
+                self.command.deactivate();
+                ctx.command_queue_tx.push(AppCommand::CommandStatus(String::new()));
+            }
+            KeyCode::Enter => {
+                let cmd_res = self.command.get();
+                self.command.deactivate();
+                
+                match cmd_res {
+                    Ok(cmd) => match cmd {
+                        Command::Save => self.save_buffer(ctx),
+                        Command::Quit => ctx.command_queue_tx.push(AppCommand::Quit),
+                    }
+                    Err(e) => {
+                        ctx.log(format!("Error parsing command: {e}"));
+                    }
+                }
+                ctx.command_queue_tx.push(AppCommand::CommandStatus(String::new()));
+            }
+            KeyCode::Char(c) => {
+                self.command.push(c);
+                let command_string_w_prefix = self.command.current_input().to_string();
+                ctx.command_queue_tx.push(AppCommand::CommandStatus(command_string_w_prefix));
+            }
+            KeyCode::Backspace => {
+                self.command.pop();
+                let command_string_w_prefix = self.command.current_input().to_string();
+                ctx.command_queue_tx.push(AppCommand::CommandStatus(command_string_w_prefix));
+            }
+            _ => { /* Nothing */ }
         }
     }
 
@@ -956,13 +1002,18 @@ impl Editor {
             }
             KeyCode::Char('/') => {
                 self.search.activate(SearchMode::Forward);
-                let input = self.search.current_input().to_string();
-                ctx.command_queue_tx.push(AppCommand::SearchStatus(input));
+                let search_input = self.search.current_input().to_string();
+                ctx.command_queue_tx.push(AppCommand::SearchStatus(search_input));
             }
             KeyCode::Char('?') => {
                 self.search.activate(SearchMode::Backward);
-                let input = self.search.current_input().to_string();
-                ctx.command_queue_tx.push(AppCommand::SearchStatus(input));
+                let search_input = self.search.current_input().to_string();
+                ctx.command_queue_tx.push(AppCommand::SearchStatus(search_input));
+            }
+            KeyCode::Char(':') => {
+                self.command.activate();
+                let cmd_input = self.command.current_input().to_string();
+                ctx.command_queue_tx.push(AppCommand::CommandStatus(cmd_input));
             }
             KeyCode::Char('G') => {
                 let target_line = self.code.len().saturating_sub(1);

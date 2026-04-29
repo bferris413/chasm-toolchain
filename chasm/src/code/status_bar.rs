@@ -14,15 +14,21 @@ use crate::code::{ChasmWidget, WidgetContext};
 #[derive(Debug)]
 pub (super) struct StatusBar {
     title: &'static str,
+
     event_text: String,
     event_max_len: usize,
+
     search_text: String,
     search_max_len: usize,
+
+    cmd_text: String,
+    cmd_max_len: usize,
 }
 impl StatusBar {
     pub fn new() -> Self {
         let event_len = 15;
         let search_len = 40;
+        let cmd_len = 20;
         let title = " Chasm Editor";
 
         Self {
@@ -31,12 +37,19 @@ impl StatusBar {
             event_max_len: event_len,
             search_text: String::with_capacity(search_len),
             search_max_len: search_len,
+            cmd_text: String::with_capacity(cmd_len),
+            cmd_max_len: cmd_len,
          }
      }
      
     pub(crate) fn set_search_input(&mut self, input: String) {
         self.search_text.clear();
         write!(&mut self.search_text, "{input}").unwrap();
+    }
+
+    pub (crate) fn set_command_input(&mut self, input: String) {
+        self.cmd_text.clear();
+        write!(&mut self.cmd_text, "{input}").unwrap();
     }
 }
 impl ChasmWidget for StatusBar {
@@ -65,13 +78,16 @@ impl ChasmWidget for StatusBar {
 
         let event_text = &self.event_text[..(self.event_max_len.min(self.event_text.len()))];
         let search_text = &self.search_text[..(self.search_max_len.min(self.search_text.len()))];
+        let cmd_text = &self.cmd_text[..(self.cmd_max_len.min(self.cmd_text.len()))];
 
         let line = Line::from(vec![
             Span::styled(self.title, Style::new().bold()),
             Span::raw(" | "),
             Span::raw(format!("{event_text:^event_len$}", event_len = self.event_max_len)),
             Span::raw(" | "),
-            Span::raw(format!("{search_text:search_len$}", search_len = self.search_max_len)),
+            Span::styled(format!("{search_text:search_len$}", search_len = self.search_max_len), Style::new().bold()),
+            Span::raw(" | "),
+            Span::styled(format!("{cmd_text:cmd_len$}", cmd_len = self.cmd_max_len), Style::new().bold()),
             Span::raw(" | "),
         ]);
 

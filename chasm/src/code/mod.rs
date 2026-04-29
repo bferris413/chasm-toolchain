@@ -134,6 +134,8 @@ enum AppCommand {
 
     Log(String),
     SearchStatus(String),
+    CommandStatus(String),
+    Quit,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -211,9 +213,7 @@ impl App {
                 match key_event.code {
                     KeyCode::Char('q') if key_event.modifiers == KeyModifiers::CONTROL => {
                         if !self.exit_modal_active {
-                            let modal = YesNoModal::new("Exit", "Are you sure you want to exit?");
-                            self.view_stack.push(Box::new(modal));
-                            self.exit_modal_active = true;
+                            self.show_exit_modal();
                         }
                     }
                     _other => {
@@ -250,6 +250,14 @@ impl App {
                         AppCommand::SearchStatus(input) => {
                             self.status.set_search_input(input);
                         }
+                        AppCommand::CommandStatus(input) => {
+                            self.status.set_command_input(input);
+                        }
+                        AppCommand::Quit => {
+                            if ! self.exit_modal_active {
+                                self.show_exit_modal();
+                            }
+                        }
                         other => { 
                             panic!("Unexpected command from exit modal: {other:?}");
                         }
@@ -262,6 +270,12 @@ impl App {
         };
 
         Ok(())
+    }
+
+    fn show_exit_modal(&mut self) {
+        let modal = YesNoModal::new("Exit", "Are you sure you want to exit?");
+        self.view_stack.push(Box::new(modal));
+        self.exit_modal_active = true;
     }
 }
 

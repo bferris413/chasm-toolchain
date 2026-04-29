@@ -7,7 +7,7 @@ use std::mem;
 
 use crate::code::editor::Position;
 
-pub (super) struct Search {
+pub (super) struct SearchBuffer {
     /// The search mode that is currently being input by the user, if any.
     active_mode: Option<SearchMode>,
     input: String,
@@ -15,7 +15,7 @@ pub (super) struct Search {
     last_search: LastSearch,
 }
 
-impl Search {
+impl SearchBuffer {
     pub fn new() -> Self {
         Self {
             active_mode: None,
