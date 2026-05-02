@@ -953,12 +953,16 @@ impl Editor {
             }
             KeyCode::Enter => {
                 let input = self.search.current_input();
-                let user_input = input.user_input();
+                let prefix = match input.mode() {
+                    SearchMode::Forward => "search",
+                    SearchMode::Backward => "rsearch",
+                };
 
+                let user_input = input.user_input();
                 let matches_display = if user_input.is_empty() {
                     String::new()
                 } else {
-                    format!("search: {}", user_input)
+                    format!("{prefix}: {user_input}")
                 };
 
                 ctx.command_queue_tx.push(AppCommand::SearchStatus(matches_display));

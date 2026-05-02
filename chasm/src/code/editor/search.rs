@@ -199,6 +199,9 @@ impl SearchInput<'_> {
     pub fn user_input(&self) -> &str {
         self.input
     }
+    pub fn mode(&self) -> SearchMode {
+        self.search_mode
+    }
 }
 impl std::fmt::Display for SearchInput<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

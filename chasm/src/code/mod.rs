@@ -208,7 +208,7 @@ impl App {
         let mut widget_ctx = app_ctx.widget_context();
         match event::read()? {
             e @ Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.status.handle_event(&e, &mut widget_ctx);
+                // self.status.handle_event(&e, &mut widget_ctx);
 
                 match key_event.code {
                     KeyCode::Char('q') if key_event.modifiers == KeyModifiers::CONTROL => {
