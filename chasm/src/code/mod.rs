@@ -133,7 +133,7 @@ enum AppCommand {
     No,
 
     Log(String),
-    SearchStatus(String),
+    SearchOrNumericStatus(String),
     CommandStatus(String),
     Quit,
 }
@@ -247,8 +247,8 @@ impl App {
                                 bail!("Logger thread dropped rx handle: {e}");
                             }
                         }
-                        AppCommand::SearchStatus(input) => {
-                            self.status.set_search_input(input);
+                        AppCommand::SearchOrNumericStatus(input) => {
+                            self.status.set_search_or_numeric_input(input);
                         }
                         AppCommand::CommandStatus(input) => {
                             self.status.set_command_input(input);

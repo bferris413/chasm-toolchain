@@ -18,8 +18,8 @@ pub (super) struct StatusBar {
     event_text: String,
     event_max_len: usize,
 
-    search_text: String,
-    search_max_len: usize,
+    search_or_numeric_text: String,
+    search_or_numeric_max_len: usize,
 
     cmd_text: String,
     cmd_max_len: usize,
@@ -35,16 +35,16 @@ impl StatusBar {
             title,
             event_text: String::with_capacity(event_len),
             event_max_len: event_len,
-            search_text: String::with_capacity(search_len),
-            search_max_len: search_len,
+            search_or_numeric_text: String::with_capacity(search_len),
+            search_or_numeric_max_len: search_len,
             cmd_text: String::with_capacity(cmd_len),
             cmd_max_len: cmd_len,
          }
      }
      
-    pub(crate) fn set_search_input(&mut self, input: String) {
-        self.search_text.clear();
-        write!(&mut self.search_text, "{input}").unwrap();
+    pub(crate) fn set_search_or_numeric_input(&mut self, input: String) {
+        self.search_or_numeric_text.clear();
+        write!(&mut self.search_or_numeric_text, "{input}").unwrap();
     }
 
     pub (crate) fn set_command_input(&mut self, input: String) {
@@ -77,7 +77,7 @@ impl ChasmWidget for StatusBar {
         );
 
         let event_text = &self.event_text[..(self.event_max_len.min(self.event_text.len()))];
-        let search_text = &self.search_text[..(self.search_max_len.min(self.search_text.len()))];
+        let search_text = &self.search_or_numeric_text[..(self.search_or_numeric_max_len.min(self.search_or_numeric_text.len()))];
         let cmd_text = &self.cmd_text[..(self.cmd_max_len.min(self.cmd_text.len()))];
 
         let line = Line::from(vec![
@@ -85,7 +85,7 @@ impl ChasmWidget for StatusBar {
             Span::raw(" "),
             Span::raw(format!("{event_text:^event_len$}", event_len = self.event_max_len)),
             Span::raw(" "),
-            Span::styled(format!("{search_text:search_len$}", search_len = self.search_max_len), Style::new().bold()),
+            Span::styled(format!("{search_text:search_len$}", search_len = self.search_or_numeric_max_len), Style::new().bold()),
             Span::raw(" "),
             Span::styled(format!("{cmd_text:cmd_len$}", cmd_len = self.cmd_max_len), Style::new().bold()),
             Span::raw(" "),

@@ -1,4 +1,5 @@
 mod command;
+mod numeric;
 mod ops;
 mod search;
 mod undo_redo;
@@ -18,6 +19,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
 use crate::code::editor::command::{Command, CommandBuffer};
+use crate::code::editor::numeric::NumericBuffer;
 use crate::code::editor::ops::DeleteXOp;
 use crate::code::editor::search::SearchMode;
 use crate::code::{AppCommand, ChasmWidget, Metadata, WidgetContext};
@@ -60,8 +62,11 @@ pub (super) struct Editor {
     last_requested_x: usize,
     active_selection: Option<VisualSelection>,
 
+    /// Different normal-mode input buffers.
     command: CommandBuffer,
     search: SearchBuffer,
+    numeric: NumericBuffer,
+
     undo_redo: UndoRedoStack,
     clipboard: Result<Clipboard, arboard::Error>,
 
@@ -109,6 +114,7 @@ impl Editor {
             active_selection: None,
             command: CommandBuffer::new(),
             search: SearchBuffer::new(),
+            numeric: NumericBuffer::new(),
             undo_redo: UndoRedoStack::new(),
             clipboard: Clipboard::new(),
             content_register: None,
@@ -130,6 +136,7 @@ impl Editor {
             active_selection: None,
             content_register: None,
             search: SearchBuffer::new(),
+            numeric: NumericBuffer::new(),
             command: CommandBuffer::new(),
             undo_redo: UndoRedoStack::new(),
             clipboard: Err(arboard::Error::ContentNotAvailable), // default to empty clipboard
@@ -949,7 +956,7 @@ impl Editor {
         match key_event.code {
             KeyCode::Esc => {
                 self.search.deactivate();
-                ctx.command_queue_tx.push(AppCommand::SearchStatus(String::new()));
+                ctx.command_queue_tx.push(AppCommand::SearchOrNumericStatus(String::new()));
             }
             KeyCode::Enter => {
                 let input = self.search.current_input();
@@ -965,7 +972,7 @@ impl Editor {
                     format!("{prefix}: {user_input}")
                 };
 
-                ctx.command_queue_tx.push(AppCommand::SearchStatus(matches_display));
+                ctx.command_queue_tx.push(AppCommand::SearchOrNumericStatus(matches_display));
 
                 self.search.store();
 
@@ -983,12 +990,12 @@ impl Editor {
             KeyCode::Char(c) => {
                 self.search.push(c);
                 let search_string_w_prefix = self.search.current_input().to_string();
-                ctx.command_queue_tx.push(AppCommand::SearchStatus(search_string_w_prefix));
+                ctx.command_queue_tx.push(AppCommand::SearchOrNumericStatus(search_string_w_prefix));
             }
             KeyCode::Backspace => {
                 self.search.pop();
                 let search_string_w_prefix = self.search.current_input().to_string();
-                ctx.command_queue_tx.push(AppCommand::SearchStatus(search_string_w_prefix));
+                ctx.command_queue_tx.push(AppCommand::SearchOrNumericStatus(search_string_w_prefix));
             }
             _ => { /* Nothing */ }
         }
@@ -997,22 +1004,44 @@ impl Editor {
     fn handle_normal_mode_input(&mut self, key_event: &KeyEvent, ctx: &mut WidgetContext) {
         assert!(self.search.active_mode().is_none());
 
+        let mut was_numeric = false;
+
         match key_event.code {
             KeyCode::Esc => {
                 if self.active_selection.is_some() {
                     self.active_selection = None;
                     self.clamp_cursor_x();
+                } else if self.numeric.is_active() {
+                    self.numeric.deactivate();
                 }
+            }
+            KeyCode::Char(d @ '0'..='9') => {
+                // numeric inputs don't use leading '0'
+                if ! self.numeric.is_active() && d == '0' {
+                    self.cursor_x = 0;
+                    self.last_requested_x = self.cursor_x;
+                    return;
+                }
+
+                if ! self.numeric.is_active() {
+                    self.numeric.activate();
+                }
+
+                self.numeric.push(d);
+                was_numeric = true;
+
+                let input = self.numeric.current_input().to_string();
+                ctx.command_queue_tx.push(AppCommand::SearchOrNumericStatus(input));
             }
             KeyCode::Char('/') => {
                 self.search.activate(SearchMode::Forward);
                 let search_input = self.search.current_input().to_string();
-                ctx.command_queue_tx.push(AppCommand::SearchStatus(search_input));
+                ctx.command_queue_tx.push(AppCommand::SearchOrNumericStatus(search_input));
             }
             KeyCode::Char('?') => {
                 self.search.activate(SearchMode::Backward);
                 let search_input = self.search.current_input().to_string();
-                ctx.command_queue_tx.push(AppCommand::SearchStatus(search_input));
+                ctx.command_queue_tx.push(AppCommand::SearchOrNumericStatus(search_input));
             }
             KeyCode::Char(':') => {
                 self.command.activate();
@@ -1020,10 +1049,18 @@ impl Editor {
                 ctx.command_queue_tx.push(AppCommand::CommandStatus(cmd_input));
             }
             KeyCode::Char('G') => {
-                let target_line = self.code.len().saturating_sub(1);
+                let max_line = self.code.len().saturating_sub(1);
+
+                let target_line = if self.numeric.is_active() {
+                    self.numeric.current_input().saturating_sub(1)
+                } else {
+                    max_line
+                };
+
                 if target_line != self.cursor_y {
-                    let move_len = target_line.saturating_sub(self.cursor_y);
-                    self.move_cursor_down(move_len, &ctx.metadata);
+                    let clamped_target_line = target_line.min(max_line);
+                    let target_pos = Position { line: clamped_target_line, column: self.cursor_x };
+                    self.move_to(target_pos, &ctx.metadata);
                 }
             }
             KeyCode::Char('g') if key_event.modifiers == KeyModifiers::CONTROL => {
@@ -1316,10 +1353,6 @@ impl Editor {
             KeyCode::Char('l') | KeyCode::Right => {
                 self.move_cursor_right(1);
             }
-            KeyCode::Char('0') => {
-                self.cursor_x = 0;
-                self.last_requested_x = self.cursor_x;
-            }
             KeyCode::Char('$') => {
                 let max_cursor_x = self.max_cursor_x();
                 self.cursor_x = max_cursor_x;
@@ -1366,6 +1399,12 @@ impl Editor {
                 ctx.log(format!("Unbound key in normal mode: {key_event:#?}"));
             }
         };
+
+        if ! was_numeric {
+            // we just executed a command that wasn't a numeric input, so we'll reset the state
+            self.numeric.deactivate();
+            ctx.command_queue_tx.push(AppCommand::SearchOrNumericStatus(String::new()));
+        }
     }
 
     fn handle_insert_mode_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
