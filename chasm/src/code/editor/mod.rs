@@ -49,7 +49,7 @@ impl ModuleOrFile {
 }
 
 pub (super) struct Editor {
-    mod_or_file: ModuleOrFile,
+    mod_or_file: Option<ModuleOrFile>,
     code: Vec<String>,
     scroll_y: usize,
     mode: EditorMode,
@@ -104,7 +104,7 @@ impl Editor {
         let code = raw_text_to_lines(code);
 
         Self {
-            mod_or_file,
+            mod_or_file: Some(mod_or_file),
             code,
             scroll_y: 0,
             mode: EditorMode::Normal,
@@ -126,7 +126,7 @@ impl Editor {
         use crate::code::editor::command::CommandBuffer;
 
         Editor {
-            mod_or_file: ModuleOrFile::File(PathBuf::new()),
+            mod_or_file: Some(ModuleOrFile::File(PathBuf::new())),
             code: Vec::new(),
             cursor_x: 0,
             cursor_y: 0,
@@ -694,7 +694,7 @@ impl Editor {
     }
 
     fn save_buffer(&self, ctx: &mut WidgetContext) {
-        let path = self.mod_or_file.path();
+        let path = self.mod_or_file.as_ref().unwrap().path();
         let file = match File::create(&path) {
             Ok(f) => f,
             Err(e) => {
