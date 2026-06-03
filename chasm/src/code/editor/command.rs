@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+#[derive(Debug)]
 pub (super) struct CommandBuffer {
     is_active: bool,
     buffer: String,

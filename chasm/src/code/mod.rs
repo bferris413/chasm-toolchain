@@ -16,12 +16,13 @@ use std::{
 use crate::{
     CodeArgs,
     FileOrProject,
-    code::{editor::{Editor, ModuleOrFile},
+    code::{editor::{EditorPane, ModuleOrFile},
     mod_select::{ModuleSelectView, ModuleSelectViewArgs},
     status_bar::StatusBar}
 };
 
 use anyhow::{Result, bail};
+use arboard::Clipboard;
 use chrono::Utc;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -52,6 +53,7 @@ impl WidgetRef for &dyn ChasmWidget {
 struct WidgetContext<'a> {
     metadata: &'a Metadata,
     command_queue_tx: CommandQueueTx<'a>,
+    clipboard: &'a mut Result<Clipboard, arboard::Error>,
 }
 impl<'a> WidgetContext<'a> {
     fn log(&mut self, message: String) {
@@ -62,8 +64,17 @@ impl<'a> WidgetContext<'a> {
 struct AppContext {
     metadata: Metadata,
     command_queue: CommandQueue,
+    // Global clipboard
+    clipboard: Result<Clipboard, arboard::Error>,
 }
 impl AppContext {
+    fn new() -> Self {
+        Self {
+            metadata: Metadata::default(),
+            command_queue: CommandQueue::new(),
+            clipboard: Clipboard::new(),
+        }
+    }
     #[cfg(test)]
     fn new_test() -> Self {
         Self {
@@ -72,6 +83,7 @@ impl AppContext {
                 view_area: ViewArea(Rect::new(100, 100, 100, 100)),
             },
             command_queue: CommandQueue::new(),
+            clipboard: Err(arboard::Error::ContentNotAvailable), // default to empty clipboard
         }
     }
 
@@ -79,6 +91,7 @@ impl AppContext {
         WidgetContext {
             metadata: &self.metadata,
             command_queue_tx: self.command_queue.tx(),
+            clipboard: &mut self.clipboard,
         }
     }
 }
@@ -170,10 +183,7 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-
-        let metadata = Metadata::default();
-        let cq = CommandQueue::new();
-        let mut app_ctx = AppContext { metadata, command_queue: cq };
+        let mut app_ctx = AppContext::new();
 
         while !self.should_exit {
             terminal.draw(|frame| {
@@ -283,7 +293,7 @@ fn select_first_widget(file_or_project: FileOrProject) -> Box<dyn ChasmWidget> {
     match file_or_project {
         FileOrProject::File(path) => {
             let mod_or_file = ModuleOrFile::File(path);
-            let editor = Editor::new(mod_or_file);
+            let editor = EditorPane::new(mod_or_file);
             Box::new(editor) as Box<dyn ChasmWidget>
         }
         FileOrProject::Project(project) => {

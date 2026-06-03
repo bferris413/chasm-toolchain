@@ -1,5 +1,6 @@
 //! Numeric input functionality.
 
+#[derive(Debug)]
 pub (super) struct NumericBuffer {
     /// The current numeric input.
     input: String,

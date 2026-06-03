@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::{buffer::Buffer, layout::Rect, style::{Style, Stylize}, widgets::{List, ListState, StatefulWidget}};
 
-use crate::{code::{AppCommand, ChasmWidget, Editor, WidgetContext, editor::ModuleOrFile}, project::{ChasmProject, ModulePath}};
+use crate::{code::{AppCommand, ChasmWidget, EditorPane, WidgetContext, editor::ModuleOrFile}, project::{ChasmProject, ModulePath}};
 
 #[derive(Debug)]
 pub (super) struct ModuleSelectViewArgs {
@@ -68,7 +68,7 @@ impl ChasmWidget for ModuleSelectView {
                         let selected = selected - 1; // offset to account for "Create new"
                         let module_path = self.module_paths[selected].clone();
                         let mod_or_file = ModuleOrFile::Module(module_path);
-                        let editor = Editor::new(mod_or_file);
+                        let editor = EditorPane::new(mod_or_file);
                         ctx.command_queue_tx.push(AppCommand::PushView(Box::new(editor)));
                     }
 
