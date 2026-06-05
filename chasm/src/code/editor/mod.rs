@@ -9,7 +9,7 @@ use std::{fmt, vec};
 use std::path::PathBuf;
 use std::ops::Range;
 
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -43,9 +43,62 @@ impl ModuleOrFile {
     }
 }
 
+#[derive(Debug)]
+struct Buffers {
+    buf_states: Vec<BufferState>,
+    mru_index: Vec<usize>,
+}
+impl Buffers {
+    fn new(mut buf_states: Vec<BufferState>) -> Self {
+        if buf_states.is_empty() {
+            buf_states.push(BufferState::new(ModuleOrFile::File(PathBuf::new())));
+        }
+
+        let mru_index = (0..buf_states.len()).collect();
+        Self { buf_states, mru_index }
+    }
+
+    fn active(&self) -> &BufferState {
+        let active_idx = self.mru_index[0];
+        &self.buf_states[active_idx]
+    }
+
+    fn active_mut(&mut self) -> &mut BufferState {
+        let active_idx = self.mru_index[0];
+        &mut self.buf_states[active_idx]
+    }
+
+    fn push(&mut self, buf_state: BufferState) {
+        self.buf_states.push(buf_state);
+        self.mru_index.insert(0, self.buf_states.len() - 1);
+    }
+
+    fn remove_active(&mut self) {
+        if self.buf_states.len() == 1 {
+            self.buf_states.pop().expect("We always have at least one buffer");
+            self.buf_states.push(BufferState::new(ModuleOrFile::File(PathBuf::new())));
+
+            assert!(self.mru_index.len() == 1, "Invariant: we always have at least one index");
+            assert_eq!(self.mru_index[0], 0, "MRU index should point to the only buffer we have");
+        } else {
+            assert!(! self.buf_states.is_empty(), "Invariant: we always have at least one buffer");
+            assert!(! self.mru_index.is_empty(), "Invariant: we always have at least one index");
+
+            let active_buf = self.mru_index.remove(0);
+            self.buf_states.remove(active_buf);
+
+            for idx in self.mru_index.iter_mut() {
+                if *idx > active_buf {
+                    *idx -= 1;
+                }
+            }
+        }
+    }
+}
+
 pub (super) struct EditorPane {
     // Per-buffer state
-    buf_state: BufferState,
+    buffers: Buffers,
 
     /// Different normal-mode input buffers.
     command: CommandBuffer,
@@ -58,7 +111,7 @@ pub (super) struct EditorPane {
 impl std::fmt::Debug for EditorPane {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Editor")
-            .field("buf_state", &self.buf_state)
+            .field("buffers", &self.buffers)
             .field("command", &self.command)
             .field("search", &self.search)
             .field("numeric", &self.numeric)
@@ -69,7 +122,7 @@ impl std::fmt::Debug for EditorPane {
 impl EditorPane {
     pub (super) fn new(mod_or_file: ModuleOrFile) -> Self {
         Self {
-            buf_state: BufferState::new(mod_or_file),
+            buffers: Buffers::new(vec![BufferState::new(mod_or_file)]),
             command: CommandBuffer::new(),
             search: SearchBuffer::new(),
             numeric: NumericBuffer::new(),
@@ -82,17 +135,33 @@ impl EditorPane {
         use crate::code::editor::command::CommandBuffer;
 
         EditorPane {
-            buf_state: BufferState::new(ModuleOrFile::File(PathBuf::new())),
+            buffers: Buffers::new(vec![BufferState::new(ModuleOrFile::File(PathBuf::new()))]),
             command: CommandBuffer::new(),
             search: SearchBuffer::new(),
             numeric: NumericBuffer::new(),
             content_register: None,
         }
     }
+
+    fn create_new_buffer(&mut self) {
+        let new_buffer = BufferState::new(ModuleOrFile::File(PathBuf::new()));
+        self.buffers.push(new_buffer);
+    }
 }
 
 impl ChasmWidget for EditorPane {
     fn handle_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
+        // check top-level editor events
+        if let Event::Key(key_event) = event
+            && key_event.kind == KeyEventKind::Press
+            && key_event.modifiers == KeyModifiers::CONTROL
+            && key_event.code == KeyCode::Char('n')
+        {
+            self.create_new_buffer();
+            return;
+        }
+        
+        // otherwise pass through
         let mut buf_ctx = BufferContext::new(
             &mut self.command,
             &mut self.search,
@@ -100,12 +169,13 @@ impl ChasmWidget for EditorPane {
             &mut self.content_register,
         );
 
-        self.buf_state.update(event, ctx, &mut buf_ctx);
+        self.buffers.active_mut().update(event, ctx, &mut buf_ctx);
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        let active_buffer = self.buffers.active();
         let height = area.height as usize;
-        let code_len = self.buf_state.code_lines().len();
+        let code_len = active_buffer.code_lines().len();
         let digits_for_line_numbers = digits_in(code_len as u64);
         let total_lines = code_len;
 
@@ -120,7 +190,7 @@ impl ChasmWidget for EditorPane {
         let gutter = layout[0];
         let code_area = layout[1];
 
-        let start = self.buf_state.scroll_y();
+        let start = active_buffer.scroll_y();
         let end = (start + height).min(total_lines);
 
         // render line numbers manually in gutter
@@ -138,16 +208,16 @@ impl ChasmWidget for EditorPane {
             );
         }
 
-        let code_slice = &self.buf_state.code_lines()[start..end];
+        let code_slice = &active_buffer.code_lines()[start..end];
         let code_as_lines = code_slice.iter().map(|line| Line::from(line.as_str())).collect::<Vec<_>>();
 
         Paragraph::new(code_as_lines).block(Block::default()).render(code_area, buf);  
 
         // draw the line highlight (must be before selection)
         let mut cursor_line_is_visible = false;
-        if (start..end).contains(&self.buf_state.cursor_y()) {
+        if (start..end).contains(&active_buffer.cursor_y()) {
             cursor_line_is_visible = true; 
-            let cursor_screen_y = self.buf_state.cursor_y() - start;
+            let cursor_screen_y = active_buffer.cursor_y() - start;
             let cursor_line_rect = Rect { y: code_area.y + cursor_screen_y as u16, x: gutter.x, width: gutter.width + code_area.width, height: 1 };
             buf.set_style(cursor_line_rect, Style::default().bg(Color::DarkGray));
         }
@@ -156,7 +226,7 @@ impl ChasmWidget for EditorPane {
         // draw the selection
         let visible_range_y = start..end;
 
-        if let Some(selection) = &self.buf_state.active_selection() {
+        if let Some(selection) = &active_buffer.active_selection() {
             if selection.is_empty() {
                 // nothing to render
             } else if selection_has_no_overlap(selection, &visible_range_y) {
@@ -171,13 +241,13 @@ impl ChasmWidget for EditorPane {
                         (selection_start.column as u16, (selection_end.column - selection_start.column) as u16)
                     } else if line_no == selection_start.line {
                         // start at selection start, width is entire line
-                        (selection_start.column as u16, (self.buf_state.code_lines()[line_no].len() - selection_start.column) as u16)
+                        (selection_start.column as u16, (active_buffer.code_lines()[line_no].len() - selection_start.column) as u16)
                     } else if line_no == selection_end.line {
                         // start at selection start, width is selection end column
                         (0, selection_end.column as u16) 
                     } else {
                         // entire line is selected
-                        (0, self.buf_state.code_lines()[line_no].len() as u16)
+                        (0, active_buffer.code_lines()[line_no].len() as u16)
                     };
 
                     // This will visually account for:
@@ -195,15 +265,15 @@ impl ChasmWidget for EditorPane {
         // draw cursor (after all highlights/selections)
         if cursor_line_is_visible {
             // TODO: we do nothing with x scroll
-            if self.buf_state.cursor_x() < code_area.width as usize {
+            if active_buffer.cursor_x() < code_area.width as usize {
                 // cursor is within visible code area, draw normally
-                let cursor_screen_y = self.buf_state.cursor_y() - start;
+                let cursor_screen_y = active_buffer.cursor_y() - start;
                 let cursor_line_rect_y = code_area.y + cursor_screen_y as u16;
 
-                let cursor_screen_x = self.buf_state.cursor_x() as u16 + gutter.width;
+                let cursor_screen_x = active_buffer.cursor_x() as u16 + gutter.width;
                 let cell = buf.cell_mut((cursor_screen_x, cursor_line_rect_y)).unwrap();
 
-                match self.buf_state.mode() {
+                match active_buffer.mode() {
                     BufferMode::Normal => {
                         cell.set_style(Style::default().bg(Color::LightGreen).fg(Color::Black));
                     }
@@ -404,4 +474,120 @@ fn strip_rn(s: &str) -> &str {
     let s = s.strip_suffix('\n').unwrap_or(s);
     let s = s.strip_suffix('\r').unwrap_or(s);
     s 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffers_adds_buffer_state_when_provided_in_list() {
+        let first_buf = BufferState::new(ModuleOrFile::File(PathBuf::new()));
+        let first_id = first_buf.id();
+        let second_buf = BufferState::new(ModuleOrFile::File(PathBuf::new()));
+
+        let buffers = Buffers::new(vec![first_buf, second_buf]);
+
+        assert_eq!(buffers.active().id(), first_id);
+    }
+
+    #[test]
+    fn buffers_creates_buffer_state_when_no_buffers_provided() {
+        let buffers = Buffers::new(vec![]);
+
+        // compile check
+        let _ = buffers.active().id();
+    }
+
+    #[test]
+    fn buffers_adds_new_active_buffer_state_on_push() {
+        let mut buffers = Buffers::new(vec![]);
+
+        // Add first set
+        let first_new_buf = BufferState::new(ModuleOrFile::File(PathBuf::new()));
+        let first_new_id = first_new_buf.id();
+
+        buffers.push(first_new_buf);
+
+        let active_id = buffers.active().id();
+        assert_eq!(first_new_id, active_id);
+
+        // Add second set
+        let second_new_buf = BufferState::new(ModuleOrFile::File(PathBuf::new()));
+        let second_new_id = second_new_buf.id();
+
+        buffers.push(second_new_buf);
+
+        let active_id = buffers.active().id();
+        assert_eq!(second_new_id, active_id);
+
+        // Add third set
+        let third_new_buf = BufferState::new(ModuleOrFile::File(PathBuf::new()));
+        let third_new_id = third_new_buf.id();
+
+        buffers.push(third_new_buf);
+
+        let active_id = buffers.active().id();
+        assert_eq!(third_new_id, active_id);
+
+        assert_eq!(buffers.buf_states.len(), 4);
+        assert_eq!(buffers.mru_index.len(), 4);
+
+        assert_eq!(buffers.buf_states[1].id(), first_new_id);
+        assert_eq!(buffers.buf_states[2].id(), second_new_id);
+        assert_eq!(buffers.buf_states[3].id(), third_new_id);
+
+        assert_eq!(buffers.mru_index, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn buffers_removes_active_buffer_state_on_remove_active() {
+        let mut buffers = Buffers {
+            buf_states: vec![
+                BufferState::new(ModuleOrFile::File(PathBuf::new())), // next next active
+                BufferState::new(ModuleOrFile::File(PathBuf::new())), // active
+                BufferState::new(ModuleOrFile::File(PathBuf::new())), // next active
+                BufferState::new(ModuleOrFile::File(PathBuf::new())), // last
+            ],
+            mru_index: vec![1, 2, 0, 3],
+        };
+        let mut ids = buffers.buf_states.iter().map(|b| b.id()).collect::<Vec<_>>();
+
+        buffers.remove_active();
+
+        assert_eq!(buffers.buf_states.len(), 3);
+        assert_eq!(buffers.mru_index.len(), 3);
+
+        ids.remove(1);
+        assert_eq!(ids, buffers.buf_states.iter().map(|b| b.id()).collect::<Vec<_>>());
+        assert_eq!(buffers.mru_index, vec![1, 0, 2]); // ids > removed id were decremented
+
+        buffers.remove_active();
+
+        assert_eq!(buffers.buf_states.len(), 2);
+        assert_eq!(buffers.mru_index.len(), 2);
+
+        ids.remove(1);
+        assert_eq!(ids, buffers.buf_states.iter().map(|b| b.id()).collect::<Vec<_>>());
+        assert_eq!(buffers.mru_index, vec![0, 1]);
+
+        buffers.remove_active();
+
+        assert_eq!(buffers.buf_states.len(), 1);
+        assert_eq!(buffers.mru_index.len(), 1);
+
+        ids.remove(0);
+        assert_eq!(ids, buffers.buf_states.iter().map(|b| b.id()).collect::<Vec<_>>());
+        assert_eq!(buffers.mru_index, vec![0]);
+
+        buffers.remove_active();
+
+        // last buffer is replaced with new empty buffer
+        assert_eq!(buffers.buf_states.len(), 1);
+        assert_eq!(buffers.mru_index.len(), 1);
+
+        // make sure we don't still have the old id
+        assert_ne!(ids, buffers.buf_states.iter().map(|b| b.id()).collect::<Vec<_>>());
+        assert_eq!(buffers.mru_index, vec![0]);
+    }
 }

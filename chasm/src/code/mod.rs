@@ -52,7 +52,7 @@ impl WidgetRef for &dyn ChasmWidget {
 
 struct WidgetContext<'a> {
     metadata: &'a Metadata,
-    command_queue_tx: CommandQueueTx<'a>,
+    command_queue_tx: CommandQueueTx<'a, AppCommand>,
     clipboard: &'a mut Result<Clipboard, arboard::Error>,
 }
 impl<'a> WidgetContext<'a> {
@@ -63,7 +63,7 @@ impl<'a> WidgetContext<'a> {
 
 struct AppContext {
     metadata: Metadata,
-    command_queue: CommandQueue,
+    command_queue: CommandQueue<AppCommand>,
     // Global clipboard
     clipboard: Result<Clipboard, arboard::Error>,
 }
@@ -96,30 +96,30 @@ impl AppContext {
     }
 }
 
-struct CommandQueue {
-    q: VecDeque<AppCommand>,
+struct CommandQueue<T> {
+    q: VecDeque<T>,
 }
-impl CommandQueue {
+impl<T> CommandQueue<T> {
     fn new() -> Self {
         Self {
             q: VecDeque::new(),
         }
     }
     
-    fn tx<'a>(&'a mut self) -> CommandQueueTx<'a> {
+    fn tx<'a>(&'a mut self) -> CommandQueueTx<'a, T> {
         CommandQueueTx { cq: self }
     }
 
-    fn drain(&mut self) -> impl Iterator<Item = AppCommand> + '_ {
+    fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
         self.q.drain(..)
     }
 }
 
-struct CommandQueueTx<'a> {
-    cq: &'a mut CommandQueue,
+struct CommandQueueTx<'a, T> {
+    cq: &'a mut CommandQueue<T>,
 }
-impl CommandQueueTx<'_> {
-    fn push(&mut self, cmd: AppCommand) {
+impl<T> CommandQueueTx<'_, T> {
+    fn push(&mut self, cmd: T) {
         self.cq.q.push_back(cmd);
     }
 }
@@ -141,6 +141,7 @@ enum AppCommand {
     None,
     PopView,
     PushView(Box<dyn ChasmWidget>),
+    NewBuffer,
 
     Yes,
     No,

@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::iter::Peekable;
+use std::sync::atomic::{self, AtomicU64};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
@@ -23,7 +24,14 @@ impl<'a> BufferContext<'a> {
     }
 }
 
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BufferId(u64);
+
 pub (super) struct BufferState {
+    id: BufferId,
+
     mod_or_file: Option<ModuleOrFile>,
     code: Vec<String>,
     scroll_y: usize,
@@ -52,6 +60,7 @@ impl BufferState {
         let code = raw_text_to_lines(code);
 
         Self {
+            id: BufferId(NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed)),
             mod_or_file: Some(mod_or_file),
             code,
             scroll_y: 0,
@@ -93,6 +102,10 @@ impl BufferState {
 
     pub fn active_selection(&self) -> Option<&VisualSelection> {
         self.active_selection.as_ref()
+    }
+
+    pub fn id(&self) -> BufferId {
+        self.id
     }
 
     fn snap_view_to_cursor(&mut self, meta: &Metadata) {
@@ -1025,6 +1038,7 @@ impl BufferState {
             }
             KeyCode::Char('n') => {
                 if self.code.is_empty() {
+                    // search but there's no content
                     return;
                 }
 
@@ -1498,6 +1512,7 @@ impl BufferState {
 impl std::fmt::Debug for BufferState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BufferState")
+            .field("id", &self.id)
             .field("mod_or_file", &self.mod_or_file)
             .field("code", &"<code hidden>")
             .field("scroll_y", &self.scroll_y)
@@ -1583,8 +1598,9 @@ use super::*;
 
         apply_sequence("v", &mut editor, &mut app_ctx.widget_context());
 
-        assert!(editor.buf_state.active_selection().is_some());
-        assert_eq!(editor.buf_state.active_selection().unwrap(), &exp_selection);
+        let active_buf = editor.buffers.active();
+        assert!(active_buf.active_selection().is_some());
+        assert_eq!(active_buf.active_selection().unwrap(), &exp_selection);
     }
 
     #[test]
@@ -1592,14 +1608,15 @@ use super::*;
         let mut editor = EditorPane::new_test();
         let code = vec!["".to_string(), "line1".to_string(), "line2".to_string()];
         let exp_code = vec!["line1".to_string(), "line2".to_string()];
-        editor.buf_state.code = code;
-        editor.buf_state.cursor_x = 0;
-        editor.buf_state.cursor_y = 0;
+
+        editor.buffers.active_mut().code = code;
+        editor.buffers.active_mut().cursor_x = 0;
+        editor.buffers.active_mut().cursor_y = 0;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("vd", &mut editor, &mut app_ctx.widget_context());
 
-        assert_eq!(editor.buf_state.code, exp_code);
+        assert_eq!(editor.buffers.active().code, exp_code);
     }
 
     #[test]
@@ -1607,12 +1624,12 @@ use super::*;
         let mut editor = EditorPane::new_test();
         let code = vec!["line1".to_string(), "line2".to_string()];
         let exp_code = vec!["line2".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("v$d", &mut editor, &mut app_ctx.widget_context());
 
-        assert_eq!(editor.buf_state.code, exp_code);
+        assert_eq!(editor.buffers.active().code, exp_code);
     }
 
     #[test]
@@ -1620,12 +1637,12 @@ use super::*;
         let mut editor = EditorPane::new_test();
         let code = vec!["line1".to_string()];
         let exp_code = vec!["l1".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("lvlld", &mut editor, &mut app_ctx.widget_context());
 
-        assert_eq!(editor.buf_state.code, exp_code);
+        assert_eq!(editor.buffers.active().code, exp_code);
     }
  
     #[test]
@@ -1633,12 +1650,12 @@ use super::*;
         let mut editor = EditorPane::new_test();
         let code = vec!["line1".to_string(), "line2".to_string()];
         let exp_code = vec!["linline2".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("lllv$d", &mut editor, &mut app_ctx.widget_context());
 
-        assert_eq!(editor.buf_state.code, exp_code);
+        assert_eq!(editor.buffers.active().code, exp_code);
     } 
  
     #[test]
@@ -1646,12 +1663,12 @@ use super::*;
         let mut editor = EditorPane::new_test();
         let code = vec!["line1".to_string(), "line2".to_string()];
         let exp_code = vec!["linne2".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("lllv0jld", &mut editor, &mut app_ctx.widget_context());
 
-        assert_eq!(editor.buf_state.code, exp_code);
+        assert_eq!(editor.buffers.active().code, exp_code);
     } 
  
     #[test]
@@ -1659,19 +1676,19 @@ use super::*;
         let mut editor = EditorPane::new_test();
         let code = vec!["line1".to_string(), "line2".to_string(), "line3".to_string()];
         let exp_code = vec!["liline3".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("llvj$d", &mut editor, &mut app_ctx.widget_context());
 
-        assert_eq!(editor.buf_state.code, exp_code);
+        assert_eq!(editor.buffers.active().code, exp_code);
     } 
  
     #[test]
     fn editor_visual_yank_works_on_single_line_ranges() {
         let mut editor = EditorPane::new_test();
         let code = vec!["line1".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("lvlly", &mut editor, &mut app_ctx.widget_context());
@@ -1684,7 +1701,7 @@ use super::*;
     fn editor_visual_yank_works_on_empty_ranges() {
         let mut editor = EditorPane::new_test();
         let code = vec!["line1".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("vy", &mut editor, &mut app_ctx.widget_context());
@@ -1702,7 +1719,7 @@ use super::*;
             "".to_string(),
             "line3".to_string()
         ];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("lvjjy", &mut editor, &mut app_ctx.widget_context());
@@ -1719,7 +1736,7 @@ use super::*;
             "line2".to_string(),
             "line3".to_string()
         ];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("vj$y", &mut editor, &mut app_ctx.widget_context());
@@ -1733,7 +1750,7 @@ use super::*;
         let mut editor = EditorPane::new_test();
         let code = vec!["line1".to_string()];
         let exp_code = vec!["l1".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("lvlls", &mut editor, &mut app_ctx.widget_context());
@@ -1741,10 +1758,10 @@ use super::*;
         assert!(editor.content_register.is_some(), "Expected register content after 's' command");
         let string_content = editor.content_register.as_ref().unwrap();
         assert_eq!(string_content, "ine");
-        assert_eq!(editor.buf_state.mode, BufferMode::Insert);
-        assert_eq!(editor.buf_state.code, exp_code);
-        assert_eq!(editor.buf_state.cursor_x, 1);
-        assert_eq!(editor.buf_state.cursor_y, 0);
+        assert_eq!(editor.buffers.active().mode, BufferMode::Insert);
+        assert_eq!(editor.buffers.active().code, exp_code);
+        assert_eq!(editor.buffers.active().cursor_x, 1);
+        assert_eq!(editor.buffers.active().cursor_y, 0);
     }
 
     #[test]
@@ -1755,7 +1772,7 @@ use super::*;
             "line2".to_string(),
         ];
         let exp_code = vec!["2".to_string()];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("vj$hhx", &mut editor, &mut app_ctx.widget_context());
@@ -1763,9 +1780,9 @@ use super::*;
         assert!(editor.content_register.is_some(), "Expected register content after 'x' command");
         let string_content = editor.content_register.as_ref().unwrap();
         assert_eq!(string_content, "line1\nline");
-        assert_eq!(editor.buf_state.code, exp_code);
-        assert_eq!(editor.buf_state.cursor_x, 0);
-        assert_eq!(editor.buf_state.cursor_y, 0);
+        assert_eq!(editor.buffers.active().code, exp_code);
+        assert_eq!(editor.buffers.active().cursor_x, 0);
+        assert_eq!(editor.buffers.active().cursor_y, 0);
     }
 
     #[test]
@@ -1780,7 +1797,7 @@ use super::*;
             "line1".to_string(),
             "line3".to_string(),
         ];
-        editor.buf_state.code = code;
+        editor.buffers.active_mut().code = code;
         let mut app_ctx = AppContext::new_test();
 
         apply_sequence("jv$d", &mut editor, &mut app_ctx.widget_context());
@@ -1788,8 +1805,8 @@ use super::*;
         assert!(editor.content_register.is_some(), "Expected register content after 'd' command");
         let string_content = editor.content_register.as_ref().unwrap();
         assert_eq!(string_content, "line2\n");
-        assert_eq!(editor.buf_state.code, exp_code);
-        assert_eq!(editor.buf_state.cursor_x, 0);
-        assert_eq!(editor.buf_state.cursor_y, 1);
+        assert_eq!(editor.buffers.active().code, exp_code);
+        assert_eq!(editor.buffers.active().cursor_x, 0);
+        assert_eq!(editor.buffers.active().cursor_y, 1);
     }
 }
