@@ -108,6 +108,10 @@ impl BufferState {
         self.id
     }
 
+    pub fn mod_or_file(&self) -> Option<&ModuleOrFile> {
+        self.mod_or_file.as_ref()
+    }
+
     fn snap_view_to_cursor(&mut self, meta: &Metadata) {
         let view_height = meta.view_area.0.height as usize;
         if self.cursor_y > self.scroll_y + view_height - 1 {

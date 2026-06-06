@@ -12,9 +12,9 @@ use std::ops::Range;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::widgets::{Block, List, ListState, Paragraph, Widget};
 
 use crate::code::editor::buffer::{BufferContext, BufferState};
 use crate::code::editor::command::CommandBuffer;
@@ -73,6 +73,12 @@ impl Buffers {
         self.mru_index.insert(0, self.buf_states.len() - 1);
     }
 
+    fn set_active(&mut self, index_of_id: usize) {
+        assert!(index_of_id < self.buf_states.len(), "active index ({index_of_id}) >= buffer list length ({})", self.buf_states.len());
+        let buf_id = self.mru_index.remove(index_of_id);
+        self.mru_index.insert(0, buf_id);
+    }
+
     fn remove_active(&mut self) {
         if self.buf_states.len() == 1 {
             self.buf_states.pop().expect("We always have at least one buffer");
@@ -94,11 +100,68 @@ impl Buffers {
             }
         }
     }
+    
+    fn ordered_buffer_paths(&self) -> Vec<String> {
+        let mut paths = Vec::with_capacity(self.buf_states.len());
+
+        for idx in self.mru_index.iter() {
+            let buf_state = &self.buf_states[*idx];
+
+            match buf_state.mod_or_file() {
+                Some(ModuleOrFile::Module(_module)) => panic!("We don't handle module selection yet"),
+                Some(ModuleOrFile::File(path)) => paths.push(path.to_string_lossy().to_string()),
+                None => paths.push("Untitled".to_string()),
+            }
+        }
+
+        paths
+    }
+}
+
+#[derive(Debug)]
+struct BufferSelect {
+    select_list_state: ListState,
+    list: List<'static>,
+
+}
+impl BufferSelect {
+    fn new(items: Vec<String>) -> Self {
+        // we control this, but sanity check until BufferSelect is wired directly to Buffers
+        assert!(!items.is_empty(), "BufferSelect created with empty list");
+
+        let list = List::new(items)
+            .highlight_style(Style::new().reversed())
+            .highlight_symbol(">> ".bold())
+            .repeat_highlight_symbol(true);
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+
+        Self {
+            select_list_state: list_state,
+            list,
+        }
+    }
+
+    fn next(&mut self) {
+        let len = self.list.len();
+        // we control this via new()
+        let cur_selected = self.select_list_state.selected().unwrap();
+
+        let next = (cur_selected + 1) % len;
+        self.select_list_state.select(Some(next as usize));
+    }
+    
+    fn selected(&self) -> usize {
+        // we control this via new()
+        self.select_list_state.selected().unwrap()
+    }
 }
 
 pub (super) struct EditorPane {
     // Per-buffer state
     buffers: Buffers,
+    buffer_select: Option<BufferSelect>,
 
     /// Different normal-mode input buffers.
     command: CommandBuffer,
@@ -123,6 +186,7 @@ impl EditorPane {
     pub (super) fn new(mod_or_file: ModuleOrFile) -> Self {
         Self {
             buffers: Buffers::new(vec![BufferState::new(mod_or_file)]),
+            buffer_select: None,
             command: CommandBuffer::new(),
             search: SearchBuffer::new(),
             numeric: NumericBuffer::new(),
@@ -136,6 +200,7 @@ impl EditorPane {
 
         EditorPane {
             buffers: Buffers::new(vec![BufferState::new(ModuleOrFile::File(PathBuf::new()))]),
+            buffer_select: None,
             command: CommandBuffer::new(),
             search: SearchBuffer::new(),
             numeric: NumericBuffer::new(),
@@ -147,29 +212,80 @@ impl EditorPane {
         let new_buffer = BufferState::new(ModuleOrFile::File(PathBuf::new()));
         self.buffers.push(new_buffer);
     }
+
+    fn process_editor_event<'a>(&mut self, event: &'a Event, ctx: &mut WidgetContext) -> Option<&'a Event> {
+        let Event::Key(key_event) = event else {
+            return Some(event)
+        };
+
+        match key_event.kind {
+            KeyEventKind::Press => {
+                match key_event.code {
+                    KeyCode::Char('n') => {
+                        if self.buffer_select.is_some() {
+                            return None;
+                        } else if key_event.modifiers == KeyModifiers::CONTROL {
+                            self.create_new_buffer();
+                            return None;
+                        }
+                    }
+                    KeyCode::Tab => {
+                        if key_event.modifiers == KeyModifiers::CONTROL {
+                            let buf_select = self.buffer_select.get_or_insert_with(|| {
+                                let selectable_buffers = self.buffers.ordered_buffer_paths();
+                                BufferSelect::new(selectable_buffers)
+                            });
+
+                            buf_select.next();
+                            return None;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        if self.buffer_select.is_some() {
+                            self.buffer_select = None;
+                            return None;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(buffer_select) = &mut self.buffer_select {
+                            let selected = buffer_select.selected();
+                            self.buffers.set_active(selected);
+                            self.buffer_select = None;
+                            return None;
+                        }
+                    }
+                    _ => {
+                        if self.buffer_select.is_some() {
+                            return None;
+                        }
+                    }
+                }
+            }
+            _ => {
+                if self.buffer_select.is_some() {
+                    return None;
+                }
+            }
+        }
+
+        // buffer select is inactive
+        Some(event)
+    }
 }
 
 impl ChasmWidget for EditorPane {
     fn handle_event(&mut self, event: &Event, ctx: &mut WidgetContext) {
         // check top-level editor events
-        if let Event::Key(key_event) = event
-            && key_event.kind == KeyEventKind::Press
-            && key_event.modifiers == KeyModifiers::CONTROL
-            && key_event.code == KeyCode::Char('n')
-        {
-            self.create_new_buffer();
-            return;
-        }
-        
-        // otherwise pass through
-        let mut buf_ctx = BufferContext::new(
-            &mut self.command,
-            &mut self.search,
-            &mut self.numeric,
-            &mut self.content_register,
-        );
+        if let Some(unhandled_event) = self.process_editor_event(event, ctx) {
+            let mut buf_ctx = BufferContext::new(
+                &mut self.command,
+                &mut self.search,
+                &mut self.numeric,
+                &mut self.content_register,
+            );
 
-        self.buffers.active_mut().update(event, ctx, &mut buf_ctx);
+            self.buffers.active_mut().update(unhandled_event, ctx, &mut buf_ctx);
+        }
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {

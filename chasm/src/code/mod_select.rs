@@ -22,7 +22,7 @@ pub (super) struct ModuleSelectView {
     module_paths: Vec<ModulePath>,
 }
 impl ModuleSelectView {
-    pub fn new(args:ModuleSelectViewArgs) -> Self {
+    pub fn new(args: ModuleSelectViewArgs) -> Self {
         let base_item = ["Create new module".to_string()].into_iter();
         let modules = args.module_paths.iter().map(|m| m.name.clone());
         let list = List::new(base_item.chain(modules))
