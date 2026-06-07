@@ -14,7 +14,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, List, ListState, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, List, ListState, Paragraph, StatefulWidget, Widget};
 
 use crate::code::editor::buffer::{BufferContext, BufferState};
 use crate::code::editor::command::CommandBuffer;
@@ -109,7 +109,13 @@ impl Buffers {
 
             match buf_state.mod_or_file() {
                 Some(ModuleOrFile::Module(_module)) => panic!("We don't handle module selection yet"),
-                Some(ModuleOrFile::File(path)) => paths.push(path.to_string_lossy().to_string()),
+                Some(ModuleOrFile::File(path)) => {
+                    if path.as_os_str().is_empty() {
+                        paths.push("Untitled".to_string());
+                    } else {
+                        paths.push(path.to_string_lossy().to_string());
+                    }
+                }
                 None => paths.push("Untitled".to_string()),
             }
         }
@@ -122,12 +128,13 @@ impl Buffers {
 struct BufferSelect {
     select_list_state: ListState,
     list: List<'static>,
-
+    max_chars: usize,
 }
 impl BufferSelect {
     fn new(items: Vec<String>) -> Self {
         // we control this, but sanity check until BufferSelect is wired directly to Buffers
         assert!(!items.is_empty(), "BufferSelect created with empty list");
+        let max_chars = items.iter().map(|s| s.len()).max().unwrap();
 
         let list = List::new(items)
             .highlight_style(Style::new().reversed())
@@ -140,6 +147,7 @@ impl BufferSelect {
         Self {
             select_list_state: list_state,
             list,
+            max_chars,
         }
     }
 
@@ -155,6 +163,20 @@ impl BufferSelect {
     fn selected(&self) -> usize {
         // we control this via new()
         self.select_list_state.selected().unwrap()
+    }
+
+    fn max_width(&self) -> usize {
+        self.max_chars + 5
+    }
+}
+impl ChasmWidget for BufferSelect {
+    fn handle_event(&mut self, _event: &Event, _ctx: &mut WidgetContext) {
+        // BufferSelect doesn't handle any events itself, it just provides the UI for buffer selection
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let mut state = self.select_list_state;
+        StatefulWidget::render(&self.list, area, buf, &mut state);
     }
 }
 
@@ -231,12 +253,14 @@ impl EditorPane {
                     }
                     KeyCode::Tab => {
                         if key_event.modifiers == KeyModifiers::CONTROL {
-                            let buf_select = self.buffer_select.get_or_insert_with(|| {
+                            let _select = self.buffer_select.get_or_insert_with(|| {
                                 let selectable_buffers = self.buffers.ordered_buffer_paths();
                                 BufferSelect::new(selectable_buffers)
                             });
+                        }
 
-                            buf_select.next();
+                        if let Some(buffer_select) = &mut self.buffer_select {
+                            buffer_select.next();
                             return None;
                         }
                     }
@@ -399,7 +423,42 @@ impl ChasmWidget for EditorPane {
                 }
             }
         }
+
+        // draw the buffer select overlay
+        if let Some(buffer_select) = &self.buffer_select {
+            let buffer_width = get_buffer_select_width(buffer_select.max_width() as u16, &area);
+
+            let overlay_area = Rect {
+                x: area.x,
+                y: area.y,
+                width: buffer_width as u16,
+                height: area.height,
+            };
+
+            Clear.render(overlay_area, buf);
+
+            let block = Block::default()
+                .borders(Borders::RIGHT | Borders::BOTTOM)
+                .style(Style::default().bg(Color::DarkGray));
+
+            let inner = block.inner(overlay_area);
+            block.render(overlay_area, buf);
+
+            buffer_select.render(inner, buf);
+        }
     }
+}
+
+/// Returns the recommended width of the buffer select based on the supplied area.
+fn get_buffer_select_width(max_item_width: u16, area: &Rect) -> u16 {
+    const MIN_WIDTH: u16 = 50;
+
+    if max_item_width >= area.width {
+        return area.width;
+    }
+
+    let base_width = MIN_WIDTH.max(max_item_width + 3);
+    base_width.min(area.width)
 }
 
 
