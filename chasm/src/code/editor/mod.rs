@@ -6,7 +6,7 @@ mod search;
 mod undo_redo;
 
 use std::{fmt, vec};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ops::Range;
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -101,7 +101,7 @@ impl Buffers {
         }
     }
     
-    fn ordered_buffer_paths(&self) -> Vec<String> {
+    fn ordered_buffer_paths(&self) -> Vec<Option<&PathBuf>> {
         let mut paths = Vec::with_capacity(self.buf_states.len());
 
         for idx in self.mru_index.iter() {
@@ -110,13 +110,9 @@ impl Buffers {
             match buf_state.mod_or_file() {
                 Some(ModuleOrFile::Module(_module)) => panic!("We don't handle module selection yet"),
                 Some(ModuleOrFile::File(path)) => {
-                    if path.as_os_str().is_empty() {
-                        paths.push("Untitled".to_string());
-                    } else {
-                        paths.push(path.to_string_lossy().to_string());
-                    }
+                    paths.push(Some(path));
                 }
-                None => paths.push("Untitled".to_string()),
+                None => paths.push(None),
             }
         }
 
@@ -254,8 +250,9 @@ impl EditorPane {
                     KeyCode::Tab => {
                         if key_event.modifiers == KeyModifiers::CONTROL {
                             let _select = self.buffer_select.get_or_insert_with(|| {
-                                let selectable_buffers = self.buffers.ordered_buffer_paths();
-                                BufferSelect::new(selectable_buffers)
+                                let ordered_buf_paths = self.buffers.ordered_buffer_paths();
+                                let selectable_items = format_for_selection(ordered_buf_paths);
+                                BufferSelect::new(selectable_items)
                             });
                         }
 
@@ -446,6 +443,52 @@ impl ChasmWidget for EditorPane {
 
             buffer_select.render(inner, buf);
         }
+    }
+}
+
+/// Formats an ordered list of paths for display in a buffer selection list.
+/// 
+/// The paths are formatted for quick visual indexing.
+fn format_for_selection(paths: Vec<Option<&PathBuf>>) -> Vec<String> {
+
+    paths.into_iter().map(|path_opt| {
+        match path_opt {
+            Some(path) => {
+                if path.as_os_str().is_empty() {
+                    "Untitled".to_string()
+                } else {
+                    format_path_for_selection(path)
+                }
+            }
+            None => "Untitled".to_string(),
+        }
+    }).collect()
+}
+
+fn format_path_for_selection(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("Expected file name to be valid unicode");
+
+    let parents = path
+        .parent()
+        .map(|p| {
+            let mut parents = p.components()
+                .rev()
+                .take(3)
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>();
+
+            parents.reverse();
+            parents.join("/")
+        })
+        .unwrap_or_default();
+
+    if parents.is_empty() {
+        filename.to_string()
+    } else {
+        format!("{filename} - {parents}")
     }
 }
 
