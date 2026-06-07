@@ -5,7 +5,7 @@ mod ops;
 mod search;
 mod undo_redo;
 
-use std::{fmt, vec};
+use std::{fmt, fs, vec};
 use std::path::{Path, PathBuf};
 use std::ops::Range;
 
@@ -120,6 +120,12 @@ impl Buffers {
     }
 }
 
+enum SelectWidgetAction {
+    NoOp,
+    SetActive(usize),
+    Cancel,
+}
+
 #[derive(Debug)]
 struct BufferSelect {
     select_list_state: ListState,
@@ -164,10 +170,38 @@ impl BufferSelect {
     fn max_width(&self) -> usize {
         self.max_chars + 5
     }
+
+    fn handle_editor_event(&mut self, event: &Event, _ctx: &mut WidgetContext) -> SelectWidgetAction {
+        let Event::Key(key_event) = event else {
+            return SelectWidgetAction::NoOp;
+        };
+
+        if let KeyEventKind::Press = key_event.kind {
+            match key_event.code {
+                KeyCode::Tab => {
+                    self.next();
+                    SelectWidgetAction::NoOp
+                }
+                KeyCode::Esc => {
+                    SelectWidgetAction::Cancel
+                }
+                KeyCode::Enter => {
+                    let selected = self.selected();
+                    SelectWidgetAction::SetActive(selected)
+                }
+                _ => {
+                    // nothing to do
+                    SelectWidgetAction::NoOp
+                }
+            }
+        } else {
+            SelectWidgetAction::NoOp
+        }
+    }
 }
 impl ChasmWidget for BufferSelect {
     fn handle_event(&mut self, _event: &Event, _ctx: &mut WidgetContext) {
-        // BufferSelect doesn't handle any events itself, it just provides the UI for buffer selection
+        // BufferSelect doesn't handle any top-level events itself
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -176,10 +210,14 @@ impl ChasmWidget for BufferSelect {
     }
 }
 
+enum EditorContextualWidget {
+    BufferSelect(BufferSelect),
+}
+
 pub (super) struct EditorPane {
     // Per-buffer state
     buffers: Buffers,
-    buffer_select: Option<BufferSelect>,
+    active_contextual_widget: Option<Box<EditorContextualWidget>>,
 
     /// Different normal-mode input buffers.
     command: CommandBuffer,
@@ -204,7 +242,7 @@ impl EditorPane {
     pub (super) fn new(mod_or_file: ModuleOrFile) -> Self {
         Self {
             buffers: Buffers::new(vec![BufferState::new(mod_or_file)]),
-            buffer_select: None,
+            active_contextual_widget: None,
             command: CommandBuffer::new(),
             search: SearchBuffer::new(),
             numeric: NumericBuffer::new(),
@@ -218,7 +256,7 @@ impl EditorPane {
 
         EditorPane {
             buffers: Buffers::new(vec![BufferState::new(ModuleOrFile::File(PathBuf::new()))]),
-            buffer_select: None,
+            active_contextual_widget: None,
             command: CommandBuffer::new(),
             search: SearchBuffer::new(),
             numeric: NumericBuffer::new(),
@@ -236,61 +274,89 @@ impl EditorPane {
             return Some(event)
         };
 
-        match key_event.kind {
-            KeyEventKind::Press => {
-                match key_event.code {
-                    KeyCode::Char('n') => {
-                        if self.buffer_select.is_some() {
-                            return None;
-                        } else if key_event.modifiers == KeyModifiers::CONTROL {
-                            self.create_new_buffer();
-                            return None;
-                        }
-                    }
-                    KeyCode::Tab => {
-                        if key_event.modifiers == KeyModifiers::CONTROL {
-                            let _select = self.buffer_select.get_or_insert_with(|| {
-                                let ordered_buf_paths = self.buffers.ordered_buffer_paths();
-                                let selectable_items = format_for_selection(ordered_buf_paths);
-                                BufferSelect::new(selectable_items)
-                            });
-                        }
-
-                        if let Some(buffer_select) = &mut self.buffer_select {
-                            buffer_select.next();
-                            return None;
-                        }
-                    }
-                    KeyCode::Esc => {
-                        if self.buffer_select.is_some() {
-                            self.buffer_select = None;
-                            return None;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if let Some(buffer_select) = &mut self.buffer_select {
-                            let selected = buffer_select.selected();
+        if let Some(active_widget) = &mut self.active_contextual_widget {
+            use EditorContextualWidget::*;
+            match active_widget.as_mut() {
+                BufferSelect(buffer_select) => {
+                    match buffer_select.handle_editor_event(event, ctx) {
+                        SelectWidgetAction::NoOp => {
+                            // nothing
+                        },
+                        SelectWidgetAction::SetActive(selected) => {
                             self.buffers.set_active(selected);
-                            self.buffer_select = None;
-                            return None;
+                            self.active_contextual_widget = None;
                         }
-                    }
-                    _ => {
-                        if self.buffer_select.is_some() {
-                            return None;
+                        SelectWidgetAction::Cancel => {
+                            self.active_contextual_widget = None;
                         }
                     }
                 }
             }
-            _ => {
-                if self.buffer_select.is_some() {
-                    return None;
+
+            return None;
+        }
+
+        if let KeyEventKind::Press = key_event.kind {
+            match key_event.code {
+                KeyCode::Char('n') => {
+                    if key_event.modifiers == KeyModifiers::CONTROL {
+                        self.create_new_buffer();
+                        return None;
+                    }
+                }
+                KeyCode::Char('s') => {
+                    if key_event.modifiers == KeyModifiers::CONTROL {
+                        self.save_buffer(ctx);
+                        return None;
+                    }
+                }
+                KeyCode::Tab => {
+                    if key_event.modifiers == KeyModifiers::CONTROL {
+                        // create a buffer select widget
+                        let ordered_buf_paths = self.buffers.ordered_buffer_paths();
+                        let selectable_items = format_for_selection(ordered_buf_paths);
+                        let mut select = BufferSelect::new(selectable_items);
+                        select.next(); // pre-select the most-recently used buffer
+
+                        self.active_contextual_widget = Some(Box::new(EditorContextualWidget::BufferSelect(select)));
+
+                        return None;
+                    }
+                }
+                _ => {
+                    // pass-through
                 }
             }
         }
 
-        // buffer select is inactive
         Some(event)
+    }
+    
+    fn save_buffer(&mut self, ctx: &mut WidgetContext) {
+        let active_buffer = self.buffers.active();
+
+        match active_buffer.mod_or_file() {
+            Some(ModuleOrFile::Module(module)) => {
+                todo!()
+            }
+            Some(ModuleOrFile::File(path)) => {
+                if ! path.as_os_str().is_empty() {
+                    match fs::write(path, active_buffer.code_lines().join("\n")) {
+                        Ok(()) => {
+                            ctx.log(format!("Saved file {}", path.display()));
+                        }
+                        Err(e) => {
+                            ctx.log(format!("Error saving file {}: {}", path.display(), e));
+                        }
+                    }
+
+                    return
+                }
+
+                todo!()
+            }
+            None => todo!(),
+        }
     }
 }
 
@@ -421,27 +487,34 @@ impl ChasmWidget for EditorPane {
             }
         }
 
-        // draw the buffer select overlay
-        if let Some(buffer_select) = &self.buffer_select {
-            let buffer_width = get_buffer_select_width(buffer_select.max_width() as u16, &area);
+        // draw whatever contextual widget is active on top of everything else
+        let Some(active_widget) = &self.active_contextual_widget else {
+            return;
+        };
 
-            let overlay_area = Rect {
-                x: area.x,
-                y: area.y,
-                width: buffer_width as u16,
-                height: area.height,
-            };
+        use EditorContextualWidget::*;
+        match active_widget.as_ref() {
+            BufferSelect(buffer_select) => {
+                let buffer_width = get_buffer_select_width(buffer_select.max_width() as u16, &area);
 
-            Clear.render(overlay_area, buf);
+                let overlay_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: buffer_width as u16,
+                    height: area.height,
+                };
 
-            let block = Block::default()
-                .borders(Borders::RIGHT | Borders::BOTTOM)
-                .style(Style::default().bg(Color::DarkGray));
+                Clear.render(overlay_area, buf);
 
-            let inner = block.inner(overlay_area);
-            block.render(overlay_area, buf);
+                let block = Block::default()
+                    .borders(Borders::RIGHT | Borders::BOTTOM)
+                    .style(Style::default().bg(Color::DarkGray));
 
-            buffer_select.render(inner, buf);
+                let inner = block.inner(overlay_area);
+
+                block.render(overlay_area, buf);
+                buffer_select.render(inner, buf);
+            }
         }
     }
 }
