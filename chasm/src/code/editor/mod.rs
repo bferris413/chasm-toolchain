@@ -161,6 +161,20 @@ impl BufferSelect {
         let next = (cur_selected + 1) % len;
         self.select_list_state.select(Some(next as usize));
     }
+
+    fn prev(&mut self) {
+        let len = self.list.len();
+        // we control this via new()
+        let cur_selected = self.select_list_state.selected().unwrap();
+
+        let next = if cur_selected == 0 {
+            len - 1
+        } else {
+            cur_selected - 1
+        };
+
+        self.select_list_state.select(Some(next as usize));
+    }
     
     fn selected(&self) -> usize {
         // we control this via new()
@@ -180,6 +194,14 @@ impl BufferSelect {
             match key_event.code {
                 KeyCode::Tab => {
                     self.next();
+                    SelectWidgetAction::NoOp
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.next();
+                    SelectWidgetAction::NoOp
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.prev();
                     SelectWidgetAction::NoOp
                 }
                 KeyCode::Esc => {
