@@ -212,8 +212,41 @@ impl EditorPane {
                         }
                     }
                 }
-                SaveNewFile(_save_new_file) => {
-                    todo!()
+                SaveNewFile(save_new_file) => {
+                    if let Some(kev) = event.as_key_event() && kev.kind == KeyEventKind::Press {
+                        match kev.code {
+                            KeyCode::Esc => {
+                                self.active_contextual_widget = None;
+                                return None;
+                            }
+                            KeyCode::Enter => {
+                                let new_path = PathBuf::from(save_new_file.input());
+
+                                if new_path.is_dir() {
+                                    ctx.log(format!("{} is a directory, please enter a file path", new_path.display()));
+                                    return None;
+                                }
+
+                                match fs::write(&new_path, self.buffers.active().code_lines().join("\n")) {
+                                    Ok(()) => {
+                                        ctx.log(format!("Saved file {}", new_path.display()));
+                                        self.buffers.active_mut().set_file(new_path);
+                                        self.active_contextual_widget = None;
+                                    }
+                                    Err(e) => {
+                                        ctx.log(format!("Error saving file {}: {}", new_path.display(), e));
+                                    }
+                                }
+
+                                return None;
+                            }
+                            _ => {
+                                // pass through to input handler
+                            }
+                        }
+                    }
+
+                    save_new_file.handle_event(event, ctx); 
                 }
             }
 
@@ -265,8 +298,9 @@ impl EditorPane {
             }
             Some(ModuleOrFile::File(path)) => {
                 if path.as_os_str().is_empty() {
-                    // show file picker
-                    todo!()
+                    let default_dir = get_default_new_file_dir(ctx);
+                    let new_file_widget = SaveNewFile::new(default_dir);
+                    self.active_contextual_widget = Some(Box::new(EditorContextualWidget::SaveNewFile(new_file_widget)));
                 } else {
                     match fs::write(path, active_buffer.code_lines().join("\n")) {
                         Ok(()) => {
@@ -430,7 +464,8 @@ impl ChasmWidget for EditorPane {
                 Clear.render(overlay_area, buf);
 
                 let block = Block::default()
-                    .borders(Borders::RIGHT | Borders::BOTTOM)
+                    .borders(Borders::ALL)
+                    .title(" Buffers ")
                     .style(Style::default().bg(Color::DarkGray));
 
                 let inner = block.inner(overlay_area);
@@ -439,7 +474,25 @@ impl ChasmWidget for EditorPane {
                 buffer_select.render(inner, buf);
             }
             SaveNewFile(save_new_file) => {
-                todo!()
+                let overlay_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: area.width,
+                    height: area.height,
+                };
+
+                Clear.render(overlay_area, buf);
+
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Save File ")
+                    .style(Style::default().bg(Color::DarkGray));
+
+                let inner = block.inner(overlay_area);
+
+                block.render(overlay_area, buf);
+                save_new_file.render(inner, buf);
+                
             }
         }
     }
@@ -559,6 +612,22 @@ fn digits_in(n: u64) -> u32 {
     } else {
         n.ilog10() + 1
     }
+}
+
+fn get_default_new_file_dir(ctx: &mut WidgetContext) -> PathBuf {
+    std::env::current_dir()
+        .or_else(|e| {
+            ctx.log(format!("Error getting current directory: {}", e));
+            std::env::home_dir().ok_or("Couldn't get home directory")
+        })
+        .unwrap_or_else(|e| {
+            ctx.log(format!("Error getting home directory, defaulting to root: {}", e));
+            if cfg!(target_os = "windows") {
+                PathBuf::from("C:\\")
+            } else {
+                PathBuf::from("/")
+            }
+        })
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

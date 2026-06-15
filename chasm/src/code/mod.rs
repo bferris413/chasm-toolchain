@@ -1,6 +1,7 @@
 mod editor;
-mod status_bar;
+mod input;
 mod mod_select;
+mod status_bar;
 
 #[cfg(target_family = "unix")]
 use std::path::PathBuf;
@@ -284,7 +285,7 @@ impl App {
     }
 
     fn show_exit_modal(&mut self) {
-        let modal = YesNoModal::new("Exit", "Are you sure you want to exit?");
+        let modal = YesNoModal::new(" Exit ", "Are you sure you want to exit?");
         self.view_stack.push(Box::new(modal));
         self.exit_modal_active = true;
     }

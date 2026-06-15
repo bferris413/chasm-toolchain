@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::iter::Peekable;
+use std::path::PathBuf;
 use std::sync::atomic::{self, AtomicU64};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -110,6 +111,19 @@ impl BufferState {
 
     pub fn mod_or_file(&self) -> Option<&ModuleOrFile> {
         self.mod_or_file.as_ref()
+    }
+
+    pub fn set_file(&mut self, file_path: PathBuf) {
+        assert!(file_path.is_file(), "set_file should only be called with file paths");
+        assert!(
+            matches!(
+                self.mod_or_file.as_ref(),
+                Some(ModuleOrFile::File(f)) if f.as_os_str().is_empty()
+            ),
+
+            "set_file should only be called on empty file buffers"
+        ); 
+        self.mod_or_file = Some(ModuleOrFile::File(file_path));
     }
 
     fn snap_view_to_cursor(&mut self, meta: &Metadata) {
