@@ -1,6 +1,7 @@
 mod buffer;
 mod buffer_select;
 mod command;
+mod load_file;
 mod numeric;
 mod ops;
 mod save_new_file;
@@ -21,6 +22,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use crate::code::editor::buffer::{BufferContext, BufferState};
 use crate::code::editor::buffer_select::BufferSelect;
 use crate::code::editor::command::CommandBuffer;
+use crate::code::editor::load_file::LoadFile;
 use crate::code::editor::numeric::NumericBuffer;
 use crate::code::editor::save_new_file::SaveNewFile;
 use crate::code::{ChasmWidget, WidgetContext};
@@ -132,6 +134,7 @@ enum SelectWidgetAction {
 
 enum EditorContextualWidget {
     BufferSelect(BufferSelect),
+    LoadFile(LoadFile),
     SaveNewFile(SaveNewFile),
 }
 
@@ -212,6 +215,35 @@ impl EditorPane {
                         }
                     }
                 }
+                LoadFile(load_file) => {
+                    if let Some(kev) = event.as_key_event() && kev.kind == KeyEventKind::Press {
+                        match kev.code {
+                            KeyCode::Esc => {
+                                self.active_contextual_widget = None;
+                                return None;
+                            }
+                            KeyCode::Enter => {
+                                let file_path = PathBuf::from(load_file.input());
+
+                                if !file_path.is_file() {
+                                    ctx.log(format!("{} is not a file, please enter a file path", file_path.display()));
+                                    return None;
+                                }
+
+                                self.buffers.push(BufferState::new(ModuleOrFile::File(file_path.clone())));
+                                ctx.log(format!("Loaded file {}", file_path.display()));
+                                self.active_contextual_widget = None;
+
+                                return None;
+                            }
+                            _ => {
+                                // pass through to input handler
+                            }
+                        }
+                    }
+
+                    load_file.handle_event(event, ctx);
+                }
                 SaveNewFile(save_new_file) => {
                     if let Some(kev) = event.as_key_event() && kev.kind == KeyEventKind::Press {
                         match kev.code {
@@ -261,6 +293,14 @@ impl EditorPane {
                         return None;
                     }
                 }
+                KeyCode::Char('o') => {
+                    if key_event.modifiers == KeyModifiers::CONTROL {
+                        let default_dir = get_default_file_dir(ctx);
+                        let load_file_widget = LoadFile::new(default_dir);
+                        self.active_contextual_widget = Some(Box::new(EditorContextualWidget::LoadFile(load_file_widget)));
+                        return None;
+                    }
+                }
                 KeyCode::Char('s') => {
                     if key_event.modifiers == KeyModifiers::CONTROL {
                         self.save_buffer(ctx);
@@ -298,7 +338,7 @@ impl EditorPane {
             }
             Some(ModuleOrFile::File(path)) => {
                 if path.as_os_str().is_empty() {
-                    let default_dir = get_default_new_file_dir(ctx);
+                    let default_dir = get_default_file_dir(ctx);
                     let new_file_widget = SaveNewFile::new(default_dir);
                     self.active_contextual_widget = Some(Box::new(EditorContextualWidget::SaveNewFile(new_file_widget)));
                 } else {
@@ -473,6 +513,26 @@ impl ChasmWidget for EditorPane {
                 block.render(overlay_area, buf);
                 buffer_select.render(inner, buf);
             }
+            LoadFile(load_file) => {
+                let overlay_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: area.width,
+                    height: area.height,
+                };
+
+                Clear.render(overlay_area, buf);
+
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Load File ")
+                    .style(Style::default().bg(Color::DarkGray));
+
+                let inner = block.inner(overlay_area);
+
+                block.render(overlay_area, buf);
+                load_file.render(inner, buf);
+            }
             SaveNewFile(save_new_file) => {
                 let overlay_area = Rect {
                     x: area.x,
@@ -614,7 +674,7 @@ fn digits_in(n: u64) -> u32 {
     }
 }
 
-fn get_default_new_file_dir(ctx: &mut WidgetContext) -> PathBuf {
+fn get_default_file_dir(ctx: &mut WidgetContext) -> PathBuf {
     std::env::current_dir()
         .or_else(|e| {
             ctx.log(format!("Error getting current directory: {}", e));
@@ -764,7 +824,66 @@ fn strip_rn(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use crate::code::AppContext;
+
     use super::*;
+    use crossterm::event::{KeyEvent, KeyEventState};
+
+    fn keycode_event(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    fn apply_sequence(seq: &str, editor: &mut EditorPane, ctx: &mut WidgetContext) {
+        for c in seq.chars() {
+            let event = keycode_event(KeyCode::Char(c), KeyModifiers::NONE);
+            editor.handle_event(&event, ctx);
+        }
+    }
+
+    #[test]
+    fn ctrl_o_opens_load_file_widget() {
+        let mut editor = EditorPane::new_test();
+        let mut app_ctx = AppContext::new_test();
+        let event = keycode_event(KeyCode::Char('o'), KeyModifiers::CONTROL);
+
+        editor.handle_event(&event, &mut app_ctx.widget_context());
+
+        assert!(matches!(
+            editor.active_contextual_widget.as_deref(),
+            Some(EditorContextualWidget::LoadFile(_))
+        ));
+    }
+
+    #[test]
+    fn load_file_adds_loaded_file_as_active_buffer() {
+        let mut editor = EditorPane::new_test();
+        let mut app_ctx = AppContext::new_test();
+        let temp_dir = std::env::temp_dir();
+        let file_name = format!("chasm_load_file_test_{}.cas", std::process::id());
+        let file_path = temp_dir.join(&file_name);
+        fs::write(&file_path, "line one\nline two").unwrap();
+
+        let load_file = LoadFile::new(temp_dir);
+        editor.active_contextual_widget = Some(Box::new(EditorContextualWidget::LoadFile(load_file)));
+        apply_sequence(&format!("{}{file_name}", std::path::MAIN_SEPARATOR), &mut editor, &mut app_ctx.widget_context());
+        let event = keycode_event(KeyCode::Enter, KeyModifiers::NONE);
+
+        editor.handle_event(&event, &mut app_ctx.widget_context());
+
+        assert!(editor.active_contextual_widget.is_none());
+        assert!(matches!(
+            editor.buffers.active().mod_or_file(),
+            Some(ModuleOrFile::File(path)) if path == &file_path
+        ));
+        assert_eq!(editor.buffers.active().code_lines(), &["line one", "line two"]);
+
+        fs::remove_file(file_path).unwrap();
+    }
 
     #[test]
     fn buffers_adds_buffer_state_when_provided_in_list() {
