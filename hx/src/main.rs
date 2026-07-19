@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn given_input_with_comments_then_bytes_are_converted_and_written() {
         let input = "
-0102 # here is a comment
+0102 ; here is a comment
 03040506
 ";
         let exp_output = vec![1, 2, 3, 4, 5, 6];
@@ -170,7 +170,7 @@ mod tests {
 
 
 06
-# just a line comment
+; just a line comment
 ";
         let exp_output = vec![1, 2, 3, 4, 5, 6];
         let mut output = Vec::new();
