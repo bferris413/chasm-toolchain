@@ -1,8 +1,8 @@
+use crate::code::theme::Theme;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -123,7 +123,7 @@ impl ChasmWidget for Input {
         }
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let width = area.width as usize;
         if width == 0 {
             return;
@@ -157,7 +157,7 @@ impl ChasmWidget for Input {
 
             spans.push(Span::styled(
                 ch.to_string(),
-                Style::default().fg(Color::Black).bg(Color::White),
+                theme.cursor_insert,
             ));
 
             let suffix = chars[cursor_col + 1..].iter().collect::<String>();
@@ -165,7 +165,7 @@ impl ChasmWidget for Input {
                 spans.push(Span::raw(suffix));
             }
 
-            Paragraph::new(Line::from(spans)).render(area, buf);
+            Paragraph::new(Line::from(spans)).style(theme.base).render(area, buf);
         }
     }
 }

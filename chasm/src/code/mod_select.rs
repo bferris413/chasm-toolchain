@@ -1,9 +1,11 @@
 //! Module select widget.
 
+use crate::code::theme::Theme;
+
 use std::sync::{Arc, RwLock};
 
 use crossterm::event::{Event, KeyCode, KeyEventKind};
-use ratatui::{buffer::Buffer, layout::Rect, style::{Style, Stylize}, widgets::{List, ListState, StatefulWidget}};
+use ratatui::{buffer::Buffer, layout::Rect, style::Stylize, widgets::{List, ListState, StatefulWidget}};
 
 use crate::{code::{AppCommand, ChasmWidget, EditorPane, WidgetContext, editor::ModuleOrFile}, project::{ChasmProject, ModulePath}};
 
@@ -26,7 +28,6 @@ impl ModuleSelectView {
         let base_item = ["Create new module".to_string()].into_iter();
         let modules = args.module_paths.iter().map(|m| m.name.clone());
         let list = List::new(base_item.chain(modules))
-            .highlight_style(Style::new().reversed())
             .highlight_symbol(">> ".bold())
             .repeat_highlight_symbol(true);
 
@@ -80,8 +81,12 @@ impl ChasmWidget for ModuleSelectView {
         }
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let mut state = self.select_list_state;
+        // The builders consume List; move it out and back without copying its items.
+        self.list = std::mem::take(&mut self.list)
+            .style(theme.panel)
+            .highlight_style(theme.selected_item);
         StatefulWidget::render(&self.list, area, buf, &mut state);
     }
 }

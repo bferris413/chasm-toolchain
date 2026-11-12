@@ -2,11 +2,13 @@
 //! 
 //! Displays app title, event information, and othe metadata.
 
+use crate::code::theme::Theme;
+
 use std::fmt::Write;
 
 use crossterm::event::{Event, KeyEventKind};
 use ratatui::{
-    buffer::Buffer, layout::Rect, style::{Color, Style}, text::{Line, Span}, widgets::{Block, Paragraph, Widget, WidgetRef}
+    buffer::Buffer, layout::Rect, text::{Line, Span}, widgets::{Block, Paragraph, Widget}
 };
 
 use crate::code::{ChasmWidget, WidgetContext};
@@ -71,23 +73,21 @@ impl ChasmWidget for StatusBar {
         };
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let block = Block::default().style(
-            Style::new().bg(Color::LightCyan).fg(Color::Black)
-        );
+    fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let block = Block::default().style(theme.status);
 
         let event_text = &self.event_text[..(self.event_max_len.min(self.event_text.len()))];
         let search_text = &self.search_or_numeric_text[..(self.search_or_numeric_max_len.min(self.search_or_numeric_text.len()))];
         let cmd_text = &self.cmd_text[..(self.cmd_max_len.min(self.cmd_text.len()))];
 
         let line = Line::from(vec![
-            Span::styled(self.title, Style::new().bold()),
+            Span::styled(self.title, theme.emphasis),
             Span::raw(" "),
             Span::raw(format!("{event_text:^event_len$}", event_len = self.event_max_len)),
             Span::raw(" "),
-            Span::styled(format!("{search_text:search_len$}", search_len = self.search_or_numeric_max_len), Style::new().bold()),
+            Span::styled(format!("{search_text:search_len$}", search_len = self.search_or_numeric_max_len), theme.emphasis),
             Span::raw(" "),
-            Span::styled(format!("{cmd_text:cmd_len$}", cmd_len = self.cmd_max_len), Style::new().bold()),
+            Span::styled(format!("{cmd_text:cmd_len$}", cmd_len = self.cmd_max_len), theme.emphasis),
             Span::raw(" "),
         ]);
 
@@ -96,13 +96,21 @@ impl ChasmWidget for StatusBar {
             .render(area, buf)
     }
 }
-impl WidgetRef for StatusBar {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        ChasmWidget::render(self, area, buf);
-    }
-}
-impl Widget for &StatusBar {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        ChasmWidget::render(self, area, buf);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::{Color, Modifier};
+
+    #[test]
+    fn emphasized_title_keeps_status_bar_reverse_video() {
+        let area = Rect::new(0, 0, 100, 1);
+        let mut buf = Buffer::empty(area);
+        StatusBar::new().render(area, &mut buf, &Theme::default());
+
+        assert_eq!(buf[(1, 0)].symbol(), "C");
+        assert_eq!(buf[(1, 0)].modifier, Modifier::REVERSED | Modifier::BOLD);
+        assert_eq!(buf[(99, 0)].modifier, Modifier::REVERSED);
+        assert!(buf.content.iter().all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset));
     }
 }

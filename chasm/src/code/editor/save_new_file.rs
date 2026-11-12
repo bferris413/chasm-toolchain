@@ -1,7 +1,8 @@
+use crate::code::theme::Theme;
 use std::path::{Path, PathBuf};
 
 use crossterm::event::Event;
-use ratatui::{buffer::Buffer, layout::{Constraint, Direction, Layout, Rect}, style::{Color, Style}, widgets::{Paragraph, Widget}};
+use ratatui::{buffer::Buffer, layout::{Constraint, Direction, Layout, Rect}, widgets::{Paragraph, Widget}};
 
 use crate::code::{ChasmWidget, WidgetContext, input::Input};
 
@@ -38,21 +39,21 @@ impl ChasmWidget for SaveNewFile {
         }
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Length(2), Constraint::Min(0)])
             .split(area);
 
         Paragraph::new("Enter file path to save:")
-            .style(Style::default().fg(Color::Cyan))
+            .style(theme.prompt)
             .render(layout[0], buf);
 
-        self.input.render(layout[1], buf);
+        self.input.render(layout[1], buf, theme);
 
         let files_str = self.dir_files.join("\n");
         Paragraph::new(files_str)
-            .style(Style::default().fg(Color::Yellow))
+            .style(theme.directory)
             .render(layout[2], buf);
     }
 }

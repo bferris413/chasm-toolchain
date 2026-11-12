@@ -15,7 +15,6 @@ use std::ops::Range;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
@@ -25,7 +24,7 @@ use crate::code::editor::command::CommandBuffer;
 use crate::code::editor::load_file::LoadFile;
 use crate::code::editor::numeric::NumericBuffer;
 use crate::code::editor::save_new_file::SaveNewFile;
-use crate::code::{ChasmWidget, WidgetContext};
+use crate::code::{ChasmWidget, WidgetContext, theme::Theme};
 use crate::project::ModulePath;
 use search::SearchBuffer;
 
@@ -372,7 +371,8 @@ impl ChasmWidget for EditorPane {
         }
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        buf.set_style(area, theme.base);
         let active_buffer = self.buffers.active();
         let height = area.height as usize;
         let code_len = active_buffer.code_lines().len();
@@ -404,7 +404,7 @@ impl ChasmWidget for EditorPane {
                 gutter.x,
                 target_y,
                 text,
-                Style::default().fg(Color::Gray),
+                theme.gutter,
             );
         }
 
@@ -419,7 +419,7 @@ impl ChasmWidget for EditorPane {
             cursor_line_is_visible = true; 
             let cursor_screen_y = active_buffer.cursor_y() - start;
             let cursor_line_rect = Rect { y: code_area.y + cursor_screen_y as u16, x: gutter.x, width: gutter.width + code_area.width, height: 1 };
-            buf.set_style(cursor_line_rect, Style::default().bg(Color::DarkGray));
+            buf.set_style(cursor_line_rect, theme.current_line);
         }
 
 
@@ -457,7 +457,7 @@ impl ChasmWidget for EditorPane {
                     x_width += 1;
 
                     let line_rect = Rect { y: code_area.y + render_line, x: code_area.x + x_start, width: x_width, height: 1 };
-                    buf.set_style(line_rect, Style::default().bg(Color::Gray));
+                    buf.set_style(line_rect, theme.selection);
                 }
             }
         }
@@ -470,27 +470,27 @@ impl ChasmWidget for EditorPane {
                 let cursor_screen_y = active_buffer.cursor_y() - start;
                 let cursor_line_rect_y = code_area.y + cursor_screen_y as u16;
 
-                let cursor_screen_x = active_buffer.cursor_x() as u16 + gutter.width;
+                let cursor_screen_x = active_buffer.cursor_x() as u16 + code_area.x;
                 let cell = buf.cell_mut((cursor_screen_x, cursor_line_rect_y)).unwrap();
 
                 match active_buffer.mode() {
                     BufferMode::Normal => {
-                        cell.set_style(Style::default().bg(Color::LightGreen).fg(Color::Black));
+                        cell.set_style(theme.cursor_normal);
                     }
                     BufferMode::Insert => {
-                        cell.set_style(Style::default().bg(Color::Red).fg(Color::Black));
+                        cell.set_style(theme.cursor_insert);
                     }
                 }
             }
         }
 
         // draw whatever contextual widget is active on top of everything else
-        let Some(active_widget) = &self.active_contextual_widget else {
+        let Some(active_widget) = &mut self.active_contextual_widget else {
             return;
         };
 
         use EditorContextualWidget::*;
-        match active_widget.as_ref() {
+        match active_widget.as_mut() {
             BufferSelect(buffer_select) => {
                 let buffer_width = get_buffer_select_width(buffer_select.max_width() as u16, &area);
 
@@ -506,12 +506,12 @@ impl ChasmWidget for EditorPane {
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .title(" Buffers ")
-                    .style(Style::default().bg(Color::DarkGray));
+                    .style(theme.panel);
 
                 let inner = block.inner(overlay_area);
 
                 block.render(overlay_area, buf);
-                buffer_select.render(inner, buf);
+                buffer_select.render(inner, buf, theme);
             }
             LoadFile(load_file) => {
                 let overlay_area = Rect {
@@ -526,12 +526,12 @@ impl ChasmWidget for EditorPane {
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .title(" Load File ")
-                    .style(Style::default().bg(Color::DarkGray));
+                    .style(theme.panel);
 
                 let inner = block.inner(overlay_area);
 
                 block.render(overlay_area, buf);
-                load_file.render(inner, buf);
+                load_file.render(inner, buf, theme);
             }
             SaveNewFile(save_new_file) => {
                 let overlay_area = Rect {
@@ -546,12 +546,12 @@ impl ChasmWidget for EditorPane {
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .title(" Save File ")
-                    .style(Style::default().bg(Color::DarkGray));
+                    .style(theme.panel);
 
                 let inner = block.inner(overlay_area);
 
                 block.render(overlay_area, buf);
-                save_new_file.render(inner, buf);
+                save_new_file.render(inner, buf, theme);
                 
             }
         }
@@ -843,6 +843,68 @@ mod tests {
             let event = keycode_event(KeyCode::Char(c), KeyModifiers::NONE);
             editor.handle_event(&event, ctx);
         }
+    }
+
+    #[test]
+    fn terminal_theme_preserves_defaults_and_distinguishes_selection_and_cursor() {
+        use ratatui::style::{Color, Modifier, Style};
+
+        let mut editor = EditorPane::new_test();
+        let mut app_ctx = AppContext::new_test();
+        apply_sequence("iabc", &mut editor, &mut app_ctx.widget_context());
+        editor.handle_event(&keycode_event(KeyCode::Esc, KeyModifiers::NONE), &mut app_ctx.widget_context());
+        apply_sequence("0vl", &mut editor, &mut app_ctx.widget_context());
+
+        // An offset area also verifies that the cursor is drawn in the code pane.
+        let area = Rect::new(5, 3, 20, 3);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        buf.set_style(area, Style::new().fg(Color::Yellow).bg(Color::Blue));
+        editor.render(area, &mut buf, &Theme::default());
+
+        let selected = &buf[(7, 3)];
+        assert_eq!(selected.symbol(), "a");
+        assert_eq!(selected.modifier, Modifier::REVERSED);
+        let cursor = &buf[(8, 3)];
+        assert_eq!(cursor.symbol(), "b");
+        assert_eq!(cursor.modifier, Modifier::REVERSED | Modifier::BOLD);
+        for cell in &buf.content {
+            assert_eq!(cell.fg, Color::Reset);
+            assert_eq!(cell.bg, Color::Reset);
+        }
+
+        editor.handle_event(&keycode_event(KeyCode::Esc, KeyModifiers::NONE), &mut app_ctx.widget_context());
+        apply_sequence("i", &mut editor, &mut app_ctx.widget_context());
+        editor.render(area, &mut buf, &Theme::default());
+        assert_eq!(buf[(8, 3)].modifier, Modifier::REVERSED | Modifier::BOLD | Modifier::UNDERLINED);
+        assert_eq!(buf[(7, 3)].modifier, Modifier::BOLD);
+    }
+
+    #[test]
+    fn overlay_uses_active_theme_for_panel_list_and_input() {
+        use ratatui::style::{Color, Style};
+
+        let mut editor = EditorPane::new_test();
+        let area = Rect::new(0, 0, 40, 10);
+        let panel = Style::reset().fg(Color::Yellow).bg(Color::Blue);
+        let selected = Style::reset().fg(Color::Black).bg(Color::Green);
+        let theme = Theme { panel, selected_item: selected, ..Theme::default() };
+        editor.active_contextual_widget = Some(Box::new(EditorContextualWidget::BufferSelect(
+            BufferSelect::new(vec!["one".into(), "two".into()]),
+        )));
+        let mut buf = Buffer::empty(area);
+        editor.render(area, &mut buf, &theme);
+        assert_eq!(buf[(1, 1)].fg, Color::Black);
+        assert_eq!(buf[(1, 1)].bg, Color::Green);
+        assert_eq!(buf[(1, 2)].fg, Color::Yellow);
+        assert_eq!(buf[(1, 2)].bg, Color::Blue);
+
+        let cursor = Style::reset().fg(Color::Red).bg(Color::Cyan);
+        let theme = Theme { cursor_insert: cursor, ..theme };
+        editor.active_contextual_widget = Some(Box::new(EditorContextualWidget::LoadFile(
+            LoadFile::new(std::env::temp_dir()),
+        )));
+        editor.render(area, &mut buf, &theme);
+        assert!(buf.content.iter().any(|cell| cell.fg == Color::Red && cell.bg == Color::Cyan));
     }
 
     #[test]

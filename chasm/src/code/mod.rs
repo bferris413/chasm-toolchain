@@ -2,6 +2,7 @@ mod editor;
 mod input;
 mod mod_select;
 mod status_bar;
+mod theme;
 
 #[cfg(target_family = "unix")]
 use std::path::PathBuf;
@@ -13,6 +14,8 @@ use std::{
     ops::Not,
     sync::{Arc, RwLock, mpsc::{self, Sender}}
 };
+
+use self::theme::Theme;
 
 use crate::{
     CodeArgs,
@@ -31,23 +34,23 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Style, Stylize},
+    style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Borders, FrameExt, ListState, Paragraph, Widget, WidgetRef}
+    widgets::{Block, Borders, Clear, ListState, Paragraph, Widget}
 };
 
 trait ChasmWidget: Debug {
     fn handle_event(&mut self, event: &Event, ctx: &mut WidgetContext);
-    fn render(&self, area: Rect, buf: &mut Buffer);
+    fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme);
 }
-impl Widget for &dyn ChasmWidget {
+/// Adapts an editor widget and the active theme to Ratatui's Widget API.
+struct ThemedWidget<'a> {
+    widget: &'a mut dyn ChasmWidget,
+    theme: &'a Theme,
+}
+impl Widget for ThemedWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        self.render(area, buf);
-    }
-}
-impl WidgetRef for &dyn ChasmWidget {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        self.render(area, buf);
+        self.widget.render(area, buf, self.theme);
     }
 }
 
@@ -160,6 +163,7 @@ struct ViewArea(Rect);
 
 #[derive(Debug)]
 pub struct App {
+    theme: Theme,
     status: StatusBar,
     view_stack: Vec<Box<dyn ChasmWidget>>,
 
@@ -174,6 +178,7 @@ impl App {
         let (log_tx, log_handle) = spawn_logger(log_file);
 
         Self {
+            theme: Theme::default(),
             status: StatusBar::new(),
             view_stack: vec![first_widget],
 
@@ -211,9 +216,16 @@ impl App {
         (StatusArea(layout[0]), ViewArea(layout[1]))
     }
 
-    fn draw(&self, frame: &mut Frame, status_area: StatusArea, view_area: ViewArea) {
-        frame.render_widget(&self.status, status_area.0);
-        frame.render_widget_ref(self.view_stack.last().unwrap().as_ref(), view_area.0);
+    fn draw(&mut self, frame: &mut Frame, status_area: StatusArea, view_area: ViewArea) {
+        frame.render_widget(Block::default().style(self.theme.base), frame.area());
+        frame.render_widget(
+            ThemedWidget { widget: &mut self.status, theme: &self.theme },
+            status_area.0,
+        );
+        frame.render_widget(
+            ThemedWidget { widget: self.view_stack.last_mut().unwrap().as_mut(), theme: &self.theme },
+            view_area.0,
+        );
     }
 
     fn handle_events(&mut self, app_ctx: &mut AppContext) -> Result<()> {
@@ -384,8 +396,8 @@ impl ChasmWidget for YesNoModal {
         }
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let modal_block = Block::default().title(self.title).borders(Borders::ALL);
+    fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let modal_block = Block::default().title(self.title).borders(Borders::ALL).style(theme.panel);
         let modal_area = centered_rect(50, 12, area);
         let inner_area = modal_block.inner(modal_area);
         let inner_layout = Layout::default()
@@ -418,20 +430,21 @@ impl ChasmWidget for YesNoModal {
 
         let prompt_block = Paragraph::new(self.prompt.clone()).centered();
         let yes_style = if matches!(self.selection, ModalSelection::Yes) {
-            Style::default().reversed().bold()
+            theme.selected_item
         } else {
-            Style::default()
+            theme.panel
         };
 
         let no_style = if matches!(self.selection, ModalSelection::No) {
-            Style::default().reversed().bold()
+            theme.selected_item
         } else {
-            Style::default()
+            theme.panel
         };
 
         let yes_button = Paragraph::new(Line::from(vec!["[ ".into(), "Y".underlined(), "es ]".into()])).centered().style(yes_style).block(Block::default());
         let no_button = Paragraph::new(Line::from(vec!["[ ".into(), "N".underlined(), "o ]".into()])).centered().style(no_style).block(Block::default());
 
+        Clear.render(modal_area, buf);
         modal_block.render(modal_area, buf);
         prompt_block.render(prompt_area, buf);
         yes_button.render(yes_area, buf);
