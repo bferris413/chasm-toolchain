@@ -103,14 +103,17 @@ mod tests {
     use ratatui::style::{Color, Modifier};
 
     #[test]
-    fn emphasized_title_keeps_status_bar_reverse_video() {
+    fn emphasized_title_preserves_status_bar_colors() {
         let area = Rect::new(0, 0, 100, 1);
         let mut buf = Buffer::empty(area);
         StatusBar::new().render(area, &mut buf, &Theme::default());
 
         assert_eq!(buf[(1, 0)].symbol(), "C");
-        assert_eq!(buf[(1, 0)].modifier, Modifier::REVERSED | Modifier::BOLD);
-        assert_eq!(buf[(99, 0)].modifier, Modifier::REVERSED);
-        assert!(buf.content.iter().all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset));
+        assert_eq!(buf[(1, 0)].modifier, Modifier::BOLD);
+        assert_eq!(buf[(99, 0)].modifier, Modifier::empty());
+        assert!(buf.content.iter().all(|cell|
+            cell.fg == Color::Rgb(0xd4, 0xd4, 0xd4)
+                && cell.bg == Color::Rgb(0x25, 0x29, 0x2c)
+        ));
     }
 }

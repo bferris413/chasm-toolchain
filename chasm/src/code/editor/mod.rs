@@ -846,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_theme_preserves_defaults_and_distinguishes_selection_and_cursor() {
+    fn default_theme_distinguishes_current_line_selection_and_cursor() {
         use ratatui::style::{Color, Modifier, Style};
 
         let mut editor = EditorPane::new_test();
@@ -863,20 +863,27 @@ mod tests {
 
         let selected = &buf[(7, 3)];
         assert_eq!(selected.symbol(), "a");
-        assert_eq!(selected.modifier, Modifier::REVERSED);
+        assert_eq!(selected.fg, Color::Rgb(0xd4, 0xd4, 0xd4));
+        assert_eq!(selected.bg, Color::Rgb(0x36, 0x46, 0x50));
+        assert_eq!(selected.modifier, Modifier::empty());
         let cursor = &buf[(8, 3)];
         assert_eq!(cursor.symbol(), "b");
-        assert_eq!(cursor.modifier, Modifier::REVERSED | Modifier::BOLD);
-        for cell in &buf.content {
-            assert_eq!(cell.fg, Color::Reset);
-            assert_eq!(cell.bg, Color::Reset);
-        }
+        assert_eq!(cursor.fg, Color::Rgb(0x18, 0x1a, 0x1b));
+        assert_eq!(cursor.bg, Color::Rgb(0xde, 0xde, 0xde));
+        assert_eq!(cursor.modifier, Modifier::empty());
+        assert_eq!(buf[(9, 3)].bg, Color::Rgb(0x22, 0x25, 0x27));
+        assert_eq!(buf[(9, 3)].modifier, Modifier::empty());
+        assert_eq!(buf[(5, 3)].fg, Color::Rgb(0x77, 0x7c, 0x80));
+        assert_eq!(buf[(5, 3)].bg, Color::Rgb(0x22, 0x25, 0x27));
+        assert_eq!(buf[(7, 4)].bg, Color::Rgb(0x18, 0x1a, 0x1b));
 
         editor.handle_event(&keycode_event(KeyCode::Esc, KeyModifiers::NONE), &mut app_ctx.widget_context());
         apply_sequence("i", &mut editor, &mut app_ctx.widget_context());
         editor.render(area, &mut buf, &Theme::default());
-        assert_eq!(buf[(8, 3)].modifier, Modifier::REVERSED | Modifier::BOLD | Modifier::UNDERLINED);
-        assert_eq!(buf[(7, 3)].modifier, Modifier::BOLD);
+        assert_eq!(buf[(8, 3)].modifier, Modifier::UNDERLINED);
+        assert_eq!(buf[(8, 3)].bg, Color::Rgb(0xde, 0xde, 0xde));
+        assert_eq!(buf[(7, 3)].modifier, Modifier::empty());
+        assert_eq!(buf[(7, 3)].bg, Color::Rgb(0x22, 0x25, 0x27));
     }
 
     #[test]
