@@ -8,7 +8,7 @@ mod save_new_file;
 mod search;
 mod undo_redo;
 
-use std::{fmt, fs, vec};
+use std::{fmt, vec};
 use std::path::{Path, PathBuf};
 use std::ops::Range;
 
@@ -188,7 +188,7 @@ impl EditorPane {
     }
 
     fn create_new_buffer(&mut self) {
-        let new_buffer = BufferState::new(ModuleOrFile::File(PathBuf::new()));
+        let new_buffer = BufferState::new_empty();
         self.buffers.push(new_buffer);
     }
 
@@ -258,7 +258,7 @@ impl EditorPane {
                                     return None;
                                 }
 
-                                match fs::write(&new_path, self.buffers.active().code_lines().join("\n")) {
+                                match self.buffers.active().save_buffer(&new_path) {
                                     Ok(()) => {
                                         ctx.log(format!("Saved file {}", new_path.display()));
                                         self.buffers.active_mut().set_file(new_path);
@@ -331,27 +331,18 @@ impl EditorPane {
     fn save_buffer(&mut self, ctx: &mut WidgetContext) {
         let active_buffer = self.buffers.active();
 
-        match active_buffer.mod_or_file() {
-            Some(ModuleOrFile::Module(module)) => {
-                todo!()
-            }
-            Some(ModuleOrFile::File(path)) => {
-                if path.as_os_str().is_empty() {
-                    let default_dir = get_default_file_dir(ctx);
-                    let new_file_widget = SaveNewFile::new(default_dir);
-                    self.active_contextual_widget = Some(Box::new(EditorContextualWidget::SaveNewFile(new_file_widget)));
-                } else {
-                    match fs::write(path, active_buffer.code_lines().join("\n")) {
-                        Ok(()) => {
-                            ctx.log(format!("Saved file {}", path.display()));
-                        }
-                        Err(e) => {
-                            ctx.log(format!("Error saving file {}: {}", path.display(), e));
-                        }
-                    }
+        match active_buffer.mod_or_file().map(ModuleOrFile::path) {
+            Some(path) if !path.as_os_str().is_empty() => {
+                match active_buffer.save_buffer(path) {
+                    Ok(()) => ctx.log(format!("Saved file {}", path.display())),
+                    Err(e) => ctx.log(format!("Error saving file {}: {}", path.display(), e)),
                 }
             }
-            None => todo!(),
+            _ => {
+                let default_dir = get_default_file_dir(ctx);
+                let new_file_widget = SaveNewFile::new(default_dir);
+                self.active_contextual_widget = Some(Box::new(EditorContextualWidget::SaveNewFile(new_file_widget)));
+            }
         }
     }
 }
@@ -368,6 +359,9 @@ impl ChasmWidget for EditorPane {
             );
 
             self.buffers.active_mut().update(unhandled_event, ctx, &mut buf_ctx);
+            if buf_ctx.save_requested {
+                self.save_buffer(ctx);
+            }
         }
     }
 
@@ -824,6 +818,7 @@ fn strip_rn(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use crate::code::AppContext;
 
     use super::*;
@@ -912,6 +907,66 @@ mod tests {
         )));
         editor.render(area, &mut buf, &theme);
         assert!(buf.content.iter().any(|cell| cell.fg == Color::Red && cell.bg == Color::Cyan));
+    }
+
+    #[test]
+    fn new_buffers_save_and_resave_with_ctrl_s_and_write_command() {
+        for (command_save, unassociated) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut editor = EditorPane::new_test();
+            let mut app_ctx = AppContext::new_test();
+            let temp_dir = std::env::temp_dir();
+            let file_name = format!("chasm_save_test_{}_{command_save}_{unassociated}.cas", std::process::id());
+            let file_path = temp_dir.join(&file_name);
+
+            editor.handle_event(
+                &keycode_event(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                &mut app_ctx.widget_context(),
+            );
+            if unassociated {
+                editor.buffers.push(BufferState::new_empty());
+            }
+            apply_sequence("ihello", &mut editor, &mut app_ctx.widget_context());
+            editor.handle_event(&keycode_event(KeyCode::Esc, KeyModifiers::NONE), &mut app_ctx.widget_context());
+            let expected = editor.buffers.active().code_lines().join("\n");
+
+            if command_save {
+                apply_sequence(":w", &mut editor, &mut app_ctx.widget_context());
+                editor.handle_event(&keycode_event(KeyCode::Enter, KeyModifiers::NONE), &mut app_ctx.widget_context());
+            } else {
+                editor.handle_event(&keycode_event(KeyCode::Char('s'), KeyModifiers::CONTROL), &mut app_ctx.widget_context());
+            }
+            assert!(matches!(
+                editor.active_contextual_widget.as_deref(),
+                Some(EditorContextualWidget::SaveNewFile(_))
+            ));
+
+            // Use a temporary directory while exercising the dialog's actual input path.
+            editor.active_contextual_widget = Some(Box::new(EditorContextualWidget::SaveNewFile(
+                SaveNewFile::new(temp_dir),
+            )));
+            apply_sequence(&format!("{}{file_name}", std::path::MAIN_SEPARATOR), &mut editor, &mut app_ctx.widget_context());
+            editor.handle_event(&keycode_event(KeyCode::Enter, KeyModifiers::NONE), &mut app_ctx.widget_context());
+
+            assert!(editor.active_contextual_widget.is_none());
+            assert_eq!(fs::read_to_string(&file_path).unwrap(), expected);
+            assert!(matches!(
+                editor.buffers.active().mod_or_file(),
+                Some(ModuleOrFile::File(path)) if path == &file_path
+            ));
+
+            // Saving again must use the associated path, without reopening the dialog.
+            apply_sequence("imore", &mut editor, &mut app_ctx.widget_context());
+            editor.handle_event(&keycode_event(KeyCode::Esc, KeyModifiers::NONE), &mut app_ctx.widget_context());
+            if command_save {
+                apply_sequence(":write", &mut editor, &mut app_ctx.widget_context());
+                editor.handle_event(&keycode_event(KeyCode::Enter, KeyModifiers::NONE), &mut app_ctx.widget_context());
+            } else {
+                editor.handle_event(&keycode_event(KeyCode::Char('s'), KeyModifiers::CONTROL), &mut app_ctx.widget_context());
+            }
+            assert!(editor.active_contextual_widget.is_none());
+            assert_eq!(fs::read_to_string(&file_path).unwrap(), editor.buffers.active().code_lines().join("\n"));
+            fs::remove_file(file_path).unwrap();
+        }
     }
 
     #[test]

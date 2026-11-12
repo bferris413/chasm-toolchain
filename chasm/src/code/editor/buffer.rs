@@ -1,7 +1,6 @@
-use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::{fs, io};
 use std::iter::Peekable;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicU64};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -14,6 +13,7 @@ use crate::code::editor::ops::{DeleteBackOp, DeleteForwardOp, DeleteVisualOp, De
 use crate::code::editor::undo_redo::UndoRedoStack;
 
 pub (super) struct BufferContext<'a> {
+    pub save_requested: bool,
     command: &'a mut CommandBuffer,
     search: &'a mut SearchBuffer,
     numeric: &'a mut NumericBuffer,
@@ -21,7 +21,7 @@ pub (super) struct BufferContext<'a> {
 }
 impl<'a> BufferContext<'a> {
     pub fn new(command: &'a mut CommandBuffer, search: &'a mut SearchBuffer, numeric: &'a mut NumericBuffer, content_register: &'a mut Option<String>) -> Self {
-        Self { command, search, numeric, content_register }
+        Self { save_requested: false, command, search, numeric, content_register }
     }
 }
 
@@ -63,6 +63,24 @@ impl BufferState {
         Self {
             id: BufferId(NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed)),
             mod_or_file: Some(mod_or_file),
+            code,
+            scroll_y: 0,
+            mode: BufferMode::Normal,
+            cursor_y: 0,
+            cursor_x: 0,
+            last_requested_x: 0,
+            active_selection: None,
+            undo_redo: UndoRedoStack::new(),
+        }
+    }
+
+    /// Creates an empty buffer not associated with a file.
+    pub fn new_empty() -> Self {
+        let code = raw_text_to_lines("New Buffer".to_string());
+
+        Self {
+            id: BufferId(NEXT_ID.fetch_add(1, atomic::Ordering::Relaxed)),
+            mod_or_file: None,
             code,
             scroll_y: 0,
             mode: BufferMode::Normal,
@@ -116,10 +134,9 @@ impl BufferState {
     pub fn set_file(&mut self, file_path: PathBuf) {
         assert!(file_path.is_file(), "set_file should only be called with file paths");
         assert!(
-            matches!(
-                self.mod_or_file.as_ref(),
-                Some(ModuleOrFile::File(f)) if f.as_os_str().is_empty()
-            ),
+            self.mod_or_file.as_ref().is_none_or(|source| {
+                matches!(source, ModuleOrFile::File(f) if f.as_os_str().is_empty())
+            }),
 
             "set_file should only be called on empty file buffers"
         ); 
@@ -676,32 +693,8 @@ impl BufferState {
         }
     }
 
-    fn save_buffer(&self, ctx: &mut WidgetContext) {
-        let path = self.mod_or_file.as_ref().unwrap().path();
-        let file = match File::create(&path) {
-            Ok(f) => f,
-            Err(e) => {
-                ctx.log(format!("Failed to save file {}: {e}", path.display()));
-                return;
-            }
-        };
-
-        let mut writer = BufWriter::new(file);
-
-        let nlines = self.code.len();
-        for (i, line) in self.code.iter().enumerate() {
-            if let Err(e) = writer.write_all(line.as_bytes()) {
-                ctx.log(format!("Failed to write to file {}: {e}", path.display()));
-                return;
-            }
-
-            if i != nlines - 1 {
-                if let Err(e) = writer.write_all(b"\n") {
-                    ctx.log(format!("Failed to write to file {}: {e}", path.display()));
-                    return;
-                }
-            }
-        }
+    pub fn save_buffer(&self, path: &Path) -> io::Result<()> {
+        fs::write(path, self.code.join("\n"))
     }
 
     /// Applies the edit operation and returns the inverse *if* something was performed.
@@ -910,7 +903,7 @@ impl BufferState {
                 
                 match cmd_res {
                     Ok(cmd) => match cmd {
-                        Command::Save => self.save_buffer(ctx),
+                        Command::Save => buf_ctx.save_requested = true,
                         Command::Quit => ctx.command_queue_tx.push(AppCommand::Quit),
                     }
                     Err(e) => {
@@ -1208,7 +1201,7 @@ impl BufferState {
             KeyCode::Char('s') => {
                 if key_event.modifiers == KeyModifiers::CONTROL {
                     // save
-                   self.save_buffer(ctx); 
+                   buf_ctx.save_requested = true;
                 } else if let Some(selection) = self.active_selection.take() {
                     // visual delete and enter insert mode
 
